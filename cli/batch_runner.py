@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yfinance as yf
+import time
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.agents.utils.rating import parse_rating
@@ -154,6 +155,7 @@ def run_batch_analysis(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
+        TimeElapsedColumn(),
         console=console,
     ) as progress:
         task = progress.add_task("Running batch...", total=total_jobs)
@@ -206,7 +208,9 @@ def run_batch_analysis(
                     )
 
                     # Run analysis
+                    start_time = time.time()
                     final_state, decision = graph.propagate(ticker, date)
+                    elapsed = time.time() - start_time
 
                     # Extract results
                     results = _extract_trading_results(
@@ -214,10 +218,14 @@ def run_batch_analysis(
                     )
                     registry.mark_completed(run_id, results)
                     completed += 1
+                    
+                    time_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+                    
                     console.print(
                         f"  [green]✓ {ticker} {date}[/green] → "
                         f"[bold]{results.get('rating', 'N/A')}[/bold]"
                         + (f" (close: ${results['close_price']:.2f})" if results.get('close_price') else "")
+                        + f" [dim]({time_str})[/dim]"
                     )
 
                 except Exception as e:

@@ -30,7 +30,7 @@ def get_language_instruction() -> str:
     from tradingagents.dataflows.config import get_config
     lang = get_config().get("output_language", "English")
     if lang.strip().lower() == "english":
-        return ""
+        return " Write your entire response in English."
     return f" Write your entire response in {lang}."
 
 

@@ -41,6 +41,16 @@ export async function deleteRun(runId: number): Promise<void> {
   await api.delete(`/runs/${runId}`)
 }
 
+export interface TickerInfo {
+  ticker: string
+  name: string
+}
+
+export async function fetchTickers(): Promise<TickerInfo[]> {
+  const { data } = await api.get<TickerInfo[]>('/runs/tickers')
+  return data
+}
+
 // ── Reports ─────────────────────────────────────────────
 export interface ReportFile {
   filename: string

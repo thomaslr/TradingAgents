@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { createChart, type IChartApi, type ISeriesApi, ColorType } from 'lightweight-charts'
+import { createChart, type IChartApi, type ISeriesApi, ColorType, CandlestickSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts'
 import { fetchOHLC, fetchRuns, type Run, type Candle, type VolumeItem } from '../api/client'
 import { ArrowLeft, RefreshCw } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
@@ -17,6 +17,7 @@ const loading = ref(true)
 const error = ref('')
 const period = ref('1y')
 const tickerInput = ref(props.ticker)
+const availableTickers = ref<any[]>([])
 const runs = ref<Run[]>([])
 
 const periods = [
@@ -29,8 +30,24 @@ const periods = [
 ]
 
 onMounted(async () => {
-  await loadChart()
+  await Promise.all([
+    loadChart(),
+    loadTickers()
+  ])
 })
+
+async function loadTickers() {
+  try {
+    availableTickers.value = await fetchTickers()
+    // If the current ticker isn't in the list, add a placeholder
+    if (!availableTickers.value.find(t => t.ticker === props.ticker)) {
+      availableTickers.value.push({ ticker: props.ticker, name: props.ticker })
+      availableTickers.value.sort((a, b) => a.ticker.localeCompare(b.ticker))
+    }
+  } catch (e) {
+    console.error("Failed to load tickers", e)
+  }
+}
 
 onBeforeUnmount(() => {
   if (chart) {
@@ -88,7 +105,7 @@ async function loadChart() {
     })
 
     // Candlestick series
-    candleSeries = chart.addCandlestickSeries({
+    candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: '#22c55e',
       downColor: '#ef4444',
       borderDownColor: '#ef4444',
@@ -99,7 +116,7 @@ async function loadChart() {
     candleSeries.setData(ohlc.candles as any)
 
     // Volume series
-    volumeSeries = chart.addHistogramSeries({
+    volumeSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: 'volume' },
       priceScaleId: 'volume',
     })
@@ -140,7 +157,7 @@ async function loadChart() {
         .sort((a, b) => a.time.localeCompare(b.time))
 
       if (markers.length > 0) {
-        candleSeries.setMarkers(markers as any)
+        createSeriesMarkers(candleSeries, markers as any)
       }
     }
 
@@ -181,18 +198,18 @@ watch(period, () => loadChart())
 
       <!-- Controls -->
       <div class="flex items-center gap-3 flex-wrap">
-        <!-- Ticker Search -->
-        <form @submit.prevent="changeTicker" class="flex items-center gap-2">
-          <input
+        <!-- Ticker Selector -->
+        <div class="flex items-center gap-2">
+          <select
             v-model="tickerInput"
-            type="text"
-            placeholder="Ticker..."
-            class="w-24 px-3 py-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] text-sm text-[var(--color-text-primary)] uppercase placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent-primary)]"
-          />
-          <button type="submit" class="px-3 py-2 rounded-lg bg-[var(--color-accent-primary)] text-white text-sm font-medium hover:opacity-90 transition-opacity">
-            Go
-          </button>
-        </form>
+            @change="changeTicker"
+            class="w-64 px-3 py-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] text-sm text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-primary)] appearance-none cursor-pointer"
+          >
+            <option v-for="t in availableTickers" :key="t.ticker" :value="t.ticker">
+              {{ t.ticker }} — {{ t.name }}
+            </option>
+          </select>
+        </div>
 
         <!-- Period Selector -->
         <div class="flex rounded-lg border border-[var(--color-border-default)] overflow-hidden">
