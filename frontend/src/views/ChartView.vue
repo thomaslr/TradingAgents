@@ -1,0 +1,241 @@
+<script setup lang="ts">
+import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { createChart, type IChartApi, type ISeriesApi, ColorType } from 'lightweight-charts'
+import { fetchOHLC, fetchRuns, type Run, type Candle, type VolumeItem } from '../api/client'
+import { ArrowLeft, RefreshCw } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
+
+const props = defineProps<{ ticker: string }>()
+const router = useRouter()
+
+const chartContainer = ref<HTMLDivElement>()
+let chart: IChartApi | null = null
+let candleSeries: ISeriesApi<'Candlestick'> | null = null
+let volumeSeries: ISeriesApi<'Histogram'> | null = null
+
+const loading = ref(true)
+const error = ref('')
+const period = ref('1y')
+const tickerInput = ref(props.ticker)
+const runs = ref<Run[]>([])
+
+const periods = [
+  { label: '1M', value: '1mo' },
+  { label: '3M', value: '3mo' },
+  { label: '6M', value: '6mo' },
+  { label: '1Y', value: '1y' },
+  { label: '2Y', value: '2y' },
+  { label: '5Y', value: '5y' },
+]
+
+onMounted(async () => {
+  await loadChart()
+})
+
+onBeforeUnmount(() => {
+  if (chart) {
+    chart.remove()
+    chart = null
+  }
+})
+
+async function loadChart() {
+  if (!chartContainer.value) return
+  loading.value = true
+  error.value = ''
+
+  try {
+    const [ohlc, allRuns] = await Promise.all([
+      fetchOHLC(tickerInput.value, period.value),
+      fetchRuns(tickerInput.value),
+    ])
+
+    runs.value = allRuns.filter(r => r.status === 'completed')
+
+    // Destroy previous chart
+    if (chart) {
+      chart.remove()
+      chart = null
+    }
+
+    await nextTick()
+
+    // Create chart
+    chart = createChart(chartContainer.value, {
+      layout: {
+        background: { type: ColorType.Solid, color: '#1a1f2e' },
+        textColor: '#94a3b8',
+        fontFamily: "'Inter', sans-serif",
+        fontSize: 12,
+      },
+      grid: {
+        vertLines: { color: '#1e293b' },
+        horzLines: { color: '#1e293b' },
+      },
+      crosshair: {
+        mode: 0,
+        vertLine: { color: '#6366f1', width: 1, style: 2, labelBackgroundColor: '#6366f1' },
+        horzLine: { color: '#6366f1', width: 1, style: 2, labelBackgroundColor: '#6366f1' },
+      },
+      rightPriceScale: {
+        borderColor: '#1e293b',
+      },
+      timeScale: {
+        borderColor: '#1e293b',
+        timeVisible: false,
+      },
+      autoSize: true,
+    })
+
+    // Candlestick series
+    candleSeries = chart.addCandlestickSeries({
+      upColor: '#22c55e',
+      downColor: '#ef4444',
+      borderDownColor: '#ef4444',
+      borderUpColor: '#22c55e',
+      wickDownColor: '#ef4444',
+      wickUpColor: '#22c55e',
+    })
+    candleSeries.setData(ohlc.candles as any)
+
+    // Volume series
+    volumeSeries = chart.addHistogramSeries({
+      priceFormat: { type: 'volume' },
+      priceScaleId: 'volume',
+    })
+
+    chart.priceScale('volume').applyOptions({
+      scaleMargins: { top: 0.8, bottom: 0 },
+    })
+
+    const coloredVolumes = ohlc.volumes.map((v: VolumeItem, i: number) => ({
+      ...v,
+      color: i > 0 && ohlc.candles[i]?.close >= ohlc.candles[i]?.open
+        ? 'rgba(34, 197, 94, 0.3)'
+        : 'rgba(239, 68, 68, 0.3)',
+    }))
+    volumeSeries.setData(coloredVolumes as any)
+
+    // Add markers for agent decisions
+    if (runs.value.length > 0 && candleSeries) {
+      // Create a Set of all available times in the candle series
+      const validTimes = new Set(ohlc.candles.map(c => c.time))
+      
+      const markers = runs.value
+        .filter(r => r.rating)
+        // Ensure the trade_date actually exists in the chart data!
+        // If the agent ran on a weekend or a day yfinance hasn't returned data for yet, we must skip the marker or the chart will crash.
+        .filter(r => validTimes.has(r.trade_date))
+        .map(r => ({
+          time: r.trade_date,
+          position: (r.rating === 'Buy' || r.rating === 'Overweight') ? 'belowBar' as const : 'aboveBar' as const,
+          color: (r.rating === 'Buy' || r.rating === 'Overweight') ? '#22c55e'
+               : (r.rating === 'Sell' || r.rating === 'Underweight') ? '#ef4444'
+               : '#f59e0b',
+          shape: (r.rating === 'Buy' || r.rating === 'Overweight') ? 'arrowUp' as const
+               : (r.rating === 'Sell' || r.rating === 'Underweight') ? 'arrowDown' as const
+               : 'circle' as const,
+          text: r.rating || '',
+        }))
+        .sort((a, b) => a.time.localeCompare(b.time))
+
+      if (markers.length > 0) {
+        candleSeries.setMarkers(markers as any)
+      }
+    }
+
+    chart.timeScale().fitContent()
+  } catch (e: any) {
+    error.value = e.message || 'Failed to load chart data'
+    console.error("Chart Error:", e)
+  } finally {
+    loading.value = false
+  }
+}
+
+function changeTicker() {
+  const t = tickerInput.value.trim().toUpperCase()
+  if (t) {
+    tickerInput.value = t
+    router.replace({ name: 'chart', params: { ticker: t } })
+    loadChart()
+  }
+}
+
+watch(period, () => loadChart())
+</script>
+
+<template>
+  <div class="p-4 md:p-8 max-w-7xl mx-auto">
+    <!-- Header -->
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+      <div class="flex items-center gap-3">
+        <button @click="router.push('/')" class="p-2 rounded-lg hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-muted)] transition-colors">
+          <ArrowLeft :size="18" />
+        </button>
+        <div>
+          <h1 class="text-2xl md:text-3xl font-bold">{{ tickerInput }}</h1>
+          <p class="text-sm text-[var(--color-text-muted)]">Interactive price chart</p>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="flex items-center gap-3 flex-wrap">
+        <!-- Ticker Search -->
+        <form @submit.prevent="changeTicker" class="flex items-center gap-2">
+          <input
+            v-model="tickerInput"
+            type="text"
+            placeholder="Ticker..."
+            class="w-24 px-3 py-2 rounded-lg bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] text-sm text-[var(--color-text-primary)] uppercase placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent-primary)]"
+          />
+          <button type="submit" class="px-3 py-2 rounded-lg bg-[var(--color-accent-primary)] text-white text-sm font-medium hover:opacity-90 transition-opacity">
+            Go
+          </button>
+        </form>
+
+        <!-- Period Selector -->
+        <div class="flex rounded-lg border border-[var(--color-border-default)] overflow-hidden">
+          <button
+            v-for="p in periods"
+            :key="p.value"
+            @click="period = p.value"
+            class="px-3 py-2 text-xs font-medium transition-colors"
+            :class="period === p.value
+              ? 'bg-[var(--color-accent-primary)] text-white'
+              : 'bg-[var(--color-bg-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'"
+          >
+            {{ p.label }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <div class="rounded-xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] overflow-hidden">
+      <div v-if="loading" class="h-[400px] md:h-[600px] flex items-center justify-center">
+        <RefreshCw :size="24" class="animate-spin text-[var(--color-text-muted)]" />
+      </div>
+      <div v-else-if="error" class="h-[400px] md:h-[600px] flex items-center justify-center text-[var(--color-signal-sell)]">
+        {{ error }}
+      </div>
+      <div v-show="!loading && !error" ref="chartContainer" class="h-[400px] md:h-[600px]"></div>
+    </div>
+
+    <!-- Agent Decision Legend -->
+    <div v-if="runs.length > 0" class="mt-4 flex flex-wrap gap-4 text-xs text-[var(--color-text-muted)]">
+      <span class="flex items-center gap-1.5">
+        <span class="w-3 h-3 rounded-full bg-[var(--color-signal-buy)]"></span>
+        Buy / Overweight
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class="w-3 h-3 rounded-full bg-[var(--color-signal-sell)]"></span>
+        Sell / Underweight
+      </span>
+      <span class="flex items-center gap-1.5">
+        <span class="w-3 h-3 rounded-full bg-[var(--color-signal-hold)]"></span>
+        Hold
+      </span>
+    </div>
+  </div>
+</template>
