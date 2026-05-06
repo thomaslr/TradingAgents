@@ -2,19 +2,36 @@ import os
 
 _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
 
+
+def _resolve_provider_var(provider: str, var_name: str, fallback: str = "") -> str:
+    """Resolve a config value with provider-prefix priority.
+
+    Lookup order:
+    1. ``{PROVIDER}_{VAR_NAME}`` (e.g. ``OLLAMA_QUICK_THINK_MODEL``)
+    2. ``{VAR_NAME}``            (e.g. ``QUICK_THINK_MODEL``)
+    3. ``fallback``              (hardcoded default)
+    """
+    prefixed = os.getenv(f"{provider.upper()}_{var_name}")
+    generic = os.getenv(var_name)
+    return prefixed or generic or fallback
+
+
+_ACTIVE_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
+
 DEFAULT_CONFIG = {
     "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
     "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR", os.path.join(_TRADINGAGENTS_HOME, "logs")),
     "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR", os.path.join(_TRADINGAGENTS_HOME, "cache")),
+    "db_path": os.getenv("TRADINGAGENTS_DB_PATH", os.path.join(_TRADINGAGENTS_HOME, "tradingagents.db")),
     "memory_log_path": os.getenv("TRADINGAGENTS_MEMORY_LOG_PATH", os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md")),
     # Optional cap on the number of resolved memory log entries. When set,
     # the oldest resolved entries are pruned once this limit is exceeded.
     # Pending entries are never pruned. None disables rotation entirely.
     "memory_log_max_entries": None,
-    # LLM settings
-    "llm_provider": "openai",
-    "deep_think_llm": os.getenv("DEEP_THINK_MODEL", "gpt-5.4"),
-    "quick_think_llm": os.getenv("QUICK_THINK_MODEL", "gpt-5.4-mini"),
+    # LLM settings — resolved via provider-prefixed env vars
+    "llm_provider": _ACTIVE_PROVIDER,
+    "deep_think_llm": _resolve_provider_var(_ACTIVE_PROVIDER, "DEEP_THINK_MODEL", "gpt-5.4"),
+    "quick_think_llm": _resolve_provider_var(_ACTIVE_PROVIDER, "QUICK_THINK_MODEL", "gpt-5.4-mini"),
     # When None, each provider's client falls back to its own default endpoint
     # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
     # The CLI overrides this per provider when the user picks one. Keeping a

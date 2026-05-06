@@ -180,10 +180,12 @@ def select_ollama_model(mode: str) -> str:
     choices = [questionary.Choice(name, value=mid) for name, mid in models]
     choices.append(questionary.Choice("Custom model ID", value="custom"))
 
-    # Determine the default choice based on environment variables
+    # Determine the default choice based on provider-prefixed environment variables
     import os
-    env_key = "QUICK_THINK_MODEL" if mode == "quick" else "DEEP_THINK_MODEL"
-    default_model = os.getenv(env_key)
+    provider = os.getenv("LLM_PROVIDER", "ollama").upper()
+    role = "QUICK_THINK_MODEL" if mode == "quick" else "DEEP_THINK_MODEL"
+    # Check provider-prefixed first, then generic fallback
+    default_model = os.getenv(f"{provider}_{role}") or os.getenv(role)
     
     # Reorder choices to put the default model at the top
     matching_index = -1

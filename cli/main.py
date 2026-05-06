@@ -25,7 +25,8 @@ from rich.align import Align
 from rich.rule import Rule
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.default_config import DEFAULT_CONFIG, _resolve_provider_var
+from tradingagents.db.registry import RunRegistry
 from cli.models import AnalystType
 from cli.utils import *
 from cli.announcements import fetch_announcements, display_announcements
@@ -1215,6 +1216,111 @@ def analyze(
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
     run_analysis(checkpoint=checkpoint)
+
+
+@app.command()
+def batch(
+    tickers: str = typer.Option(
+        "SPY",
+        "--tickers", "-t",
+        help="Comma-separated ticker symbols, e.g. AAPL,IBM,NVDA",
+    ),
+    date: str = typer.Option(
+        None,
+        "--date", "-d",
+        help="Single analysis date (YYYY-MM-DD). Defaults to today.",
+    ),
+    date_from: str = typer.Option(
+        None,
+        "--from",
+        help="Start date for range (YYYY-MM-DD). Use with --to.",
+    ),
+    date_to: str = typer.Option(
+        None,
+        "--to",
+        help="End date for range (YYYY-MM-DD). Use with --from.",
+    ),
+    depth: int = typer.Option(
+        None,
+        "--depth",
+        help="Analysis depth / debate rounds (default from .env or 1).",
+    ),
+    skip_completed: bool = typer.Option(
+        True,
+        "--skip-completed/--no-skip",
+        help="Skip analyses that are already completed in the registry.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force", "-f",
+        help="Force re-run even if a completed run exists.",
+    ),
+):
+    """Run analysis in non-interactive batch mode.
+
+    Processes each (ticker, date) pair sequentially, records results in
+    the SQLite registry, and skips already-completed runs by default.
+
+    Examples:
+
+        python -m cli.main batch --tickers IBM --date 2026-05-06
+
+        python -m cli.main batch --tickers AAPL,IBM --from 2026-05-01 --to 2026-05-06
+
+        python -m cli.main batch --tickers IBM --date 2026-05-06 --force
+    """
+    import os
+    from cli.batch_runner import run_batch_analysis, _expand_dates
+
+    # Resolve dates
+    if date_from and date_to:
+        dates = _expand_dates(date_from, date_to)
+    elif date:
+        dates = [date]
+    else:
+        dates = [datetime.datetime.now().strftime("%Y-%m-%d")]
+
+    # Validate date format
+    for d in dates:
+        try:
+            datetime.datetime.strptime(d, "%Y-%m-%d")
+        except ValueError:
+            console.print(f"[red]Invalid date format: {d}. Use YYYY-MM-DD.[/red]")
+            raise typer.Exit(1)
+
+    # Parse tickers
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not ticker_list:
+        console.print("[red]No tickers provided.[/red]")
+        raise typer.Exit(1)
+
+    # Resolve config
+    provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+    config = DEFAULT_CONFIG.copy()
+    config["llm_provider"] = provider
+    config["quick_think_llm"] = _resolve_provider_var(provider, "QUICK_THINK_MODEL", config["quick_think_llm"])
+    config["deep_think_llm"] = _resolve_provider_var(provider, "DEEP_THINK_MODEL", config["deep_think_llm"])
+    config["backend_url"] = os.getenv(f"{provider.upper()}_BASE_URL") or config.get("backend_url")
+
+    # Resolve depth
+    resolved_depth = depth or int(os.getenv("DEFAULT_DEPTH", "1"))
+    config["max_debate_rounds"] = resolved_depth
+    config["max_risk_discuss_rounds"] = resolved_depth
+
+    # Open registry
+    registry = RunRegistry(config["db_path"])
+
+    try:
+        run_batch_analysis(
+            tickers=ticker_list,
+            dates=dates,
+            config=config,
+            registry=registry,
+            skip_completed=skip_completed,
+            force=force,
+        )
+    finally:
+        registry.close()
 
 
 if __name__ == "__main__":
