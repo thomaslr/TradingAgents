@@ -13,8 +13,8 @@ DEFAULT_CONFIG = {
     "memory_log_max_entries": None,
     # LLM settings
     "llm_provider": "openai",
-    "deep_think_llm": "gpt-5.4",
-    "quick_think_llm": "gpt-5.4-mini",
+    "deep_think_llm": os.getenv("DEEP_THINK_MODEL", "gpt-5.4"),
+    "quick_think_llm": os.getenv("QUICK_THINK_MODEL", "gpt-5.4-mini"),
     # When None, each provider's client falls back to its own default endpoint
     # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
     # The CLI overrides this per provider when the user picks one. Keeping a
@@ -34,7 +34,7 @@ DEFAULT_CONFIG = {
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
-    "max_recur_limit": 100,
+    "max_recur_limit": int(os.getenv("MAX_RECUR_LIMIT", 100)),
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {

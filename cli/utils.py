@@ -147,6 +147,78 @@ def _fetch_openrouter_models() -> List[Tuple[str, str]]:
         return []
 
 
+def _fetch_ollama_models() -> List[Tuple[str, str]]:
+    """Fetch available models from the local Ollama API."""
+    import requests
+    import os
+    # Get base URL from environment or default
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    # Native Ollama API is at /api/tags, strip /v1 if present
+    api_url = base_url.replace("/v1", "")
+    if not api_url.endswith("/"):
+        api_url += "/"
+    api_url += "api/tags"
+
+    try:
+        resp = requests.get(api_url, timeout=5)
+        resp.raise_for_status()
+        models = resp.json().get("models", [])
+        return [(f"{m['name']} ({m['details']['parameter_size']}, local)", m["name"]) for m in models]
+    except Exception as e:
+        console.print(f"\n[yellow]Could not fetch local Ollama models: {e}[/yellow]")
+        return []
+
+
+def select_ollama_model(mode: str) -> str:
+    """Select an Ollama model from locally available tags."""
+    models = _fetch_ollama_models()
+
+    if not models:
+        console.print("\n[yellow]No local Ollama models found. Please enter a model ID manually.[/yellow]")
+        return _prompt_custom_model_id()
+
+    choices = [questionary.Choice(name, value=mid) for name, mid in models]
+    choices.append(questionary.Choice("Custom model ID", value="custom"))
+
+    # Determine the default choice based on environment variables
+    import os
+    env_key = "QUICK_THINK_MODEL" if mode == "quick" else "DEEP_THINK_MODEL"
+    default_model = os.getenv(env_key)
+    
+    # Reorder choices to put the default model at the top
+    matching_index = -1
+    if default_model:
+        default_model_clean = default_model.strip().lower()
+        for i, choice in enumerate(choices):
+            if choice.value.strip().lower() == default_model_clean:
+                matching_index = i
+                break
+        
+        if matching_index > -1:
+            # Move the matching choice to the top
+            match = choices.pop(matching_index)
+            choices.insert(0, match)
+
+    choice = questionary.select(
+        f"Select Your [{mode.title()}-Thinking Ollama Model]:",
+        choices=choices,
+        default=choices[0].value if matching_index > -1 else None,
+        instruction="\n- Use arrow keys to navigate\n- Press Enter to select",
+        style=questionary.Style([
+            ("selected", "fg:magenta noinherit"),
+            ("highlighted", "fg:magenta noinherit"),
+            ("pointer", "fg:magenta noinherit"),
+        ]),
+    ).ask()
+
+    if choice is None:
+        return ""
+    if choice == "custom":
+        return _prompt_custom_model_id()
+
+    return choice
+
+
 def select_openrouter_model() -> str:
     """Select an OpenRouter model from the newest available, or enter a custom ID."""
     models = _fetch_openrouter_models()
@@ -165,29 +237,37 @@ def select_openrouter_model() -> str:
         ]),
     ).ask()
 
-    if choice is None or choice == "custom":
-        return questionary.text(
+    if choice is None:
+        return ""
+    if choice == "custom":
+        result = questionary.text(
             "Enter OpenRouter model ID (e.g. google/gemma-4-26b-a4b-it):",
             validate=lambda x: len(x.strip()) > 0 or "Please enter a model ID.",
-        ).ask().strip()
+        ).ask()
+        return result.strip() if result else ""
 
     return choice
 
 
 def _prompt_custom_model_id() -> str:
     """Prompt user to type a custom model ID."""
-    return questionary.text(
+    result = questionary.text(
         "Enter model ID:",
         validate=lambda x: len(x.strip()) > 0 or "Please enter a model ID.",
-    ).ask().strip()
+    ).ask()
+    return result.strip() if result else ""
 
 
 def _select_model(provider: str, mode: str) -> str:
     """Select a model for the given provider and mode (quick/deep)."""
-    if provider.lower() == "openrouter":
+    provider_lower = provider.lower()
+    if provider_lower == "openrouter":
         return select_openrouter_model()
 
-    if provider.lower() == "azure":
+    if provider_lower == "ollama":
+        return select_ollama_model(mode)
+
+    if provider_lower == "azure":
         return questionary.text(
             f"Enter Azure deployment name ({mode}-thinking):",
             validate=lambda x: len(x.strip()) > 0 or "Please enter a deployment name.",
