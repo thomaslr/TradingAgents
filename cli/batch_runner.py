@@ -16,6 +16,7 @@ import yfinance as yf
 import time
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
+from langchain_core.callbacks import BaseCallbackHandler
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.agents.utils.rating import parse_rating
@@ -26,6 +27,51 @@ console = Console()
 
 # All four analyst types — batch mode uses all of them.
 ALL_ANALYSTS = ["market", "social", "news", "fundamentals"]
+
+
+class TokenTracker(BaseCallbackHandler):
+    """Callback handler to track total token usage across multiple LLM calls."""
+    def __init__(self, progress=None, task_id=None):
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.progress = progress
+        self.task_id = task_id
+
+    def on_llm_end(self, response, **kwargs) -> None:
+        """Collect token usage from the LLM response metadata."""
+        for generations in response.generations:
+            for generation in generations:
+                # Different providers use different metadata keys for tokens
+                # We try to handle the most common ones (OpenAI, Ollama, Anthropic, Gemini)
+                usage = generation.message.response_metadata.get("token_usage") or \
+                        generation.message.response_metadata.get("usage") or \
+                        generation.message.additional_kwargs.get("token_usage")
+                
+                if usage:
+                    self.input_tokens += usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
+                    self.output_tokens += usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+                    
+                    if self.progress and self.task_id is not None:
+                        tokens_str = f"[blue]{self.input_tokens}ᵢ[/blue]/[cyan]{self.output_tokens}ₒ[/cyan]"
+                        self.progress.update(self.task_id, tokens=tokens_str)
+
+
+class StatusTracker(BaseCallbackHandler):
+    """Callback to update the progress bar status label."""
+    def __init__(self, progress, task_id):
+        self.progress = progress
+        self.task_id = task_id
+
+    def on_chain_start(self, serialized, inputs, **kwargs):
+        """Update status when a new node/chain starts."""
+        name = serialized.get("name") or "Agent"
+        if name in ["market_analyst_node", "sentiment_analyst_node", "news_analyst_node", "fundamentals_analyst_node"]:
+            status = name.replace("_node", "").replace("_", " ").title()
+            self.progress.update(self.task_id, status=f"[yellow]{status}[/yellow]")
+        elif "debate" in name.lower():
+            self.progress.update(self.task_id, status="[orange1]Debating[/orange1]")
+        elif "trader" in name.lower():
+            self.progress.update(self.task_id, status="[cyan]Planning Trade[/cyan]")
 
 
 def _expand_dates(date_from: str, date_to: str) -> List[str]:
@@ -155,10 +201,12 @@ def run_batch_analysis(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
+        TextColumn("{task.fields[status]}", justify="right"),
+        TextColumn("({task.fields[tokens]})", justify="right"),
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Running batch...", total=total_jobs)
+        task = progress.add_task("Running batch...", total=total_jobs, status="[dim]Starting...[/dim]", tokens="0/0")
 
         for ticker in tickers:
             for date in dates:
@@ -201,14 +249,18 @@ def run_batch_analysis(
 
                 try:
                     # Build the graph
+                    tracker = TokenTracker(progress, task)
+                    status_cb = StatusTracker(progress, task)
                     graph = TradingAgentsGraph(
                         ALL_ANALYSTS,
                         config=config,
                         debug=False,
+                        callbacks=[tracker, status_cb]
                     )
 
                     # Run analysis
                     start_time = time.time()
+                    progress.update(task, status="[yellow]Initializing[/yellow]")
                     final_state, decision = graph.propagate(ticker, date)
                     elapsed = time.time() - start_time
 
@@ -219,13 +271,18 @@ def run_batch_analysis(
                     registry.mark_completed(run_id, results)
                     completed += 1
                     
+                    progress.update(task, status="[green]Done[/green]")
+                    
                     time_str = f"{elapsed:.1f}s" if elapsed < 60 else f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+                    
+                    # Format token display (In / Out)
+                    tokens_str = f"[blue]{tracker.input_tokens}ᵢ[/blue]/[cyan]{tracker.output_tokens}ₒ[/cyan]"
                     
                     console.print(
                         f"  [green]✓ {ticker} {date}[/green] → "
                         f"[bold]{results.get('rating', 'N/A')}[/bold]"
                         + (f" (close: ${results['close_price']:.2f})" if results.get('close_price') else "")
-                        + f" [dim]({time_str})[/dim]"
+                        + f" [dim]({tokens_str} | {time_str})[/dim]"
                     )
 
                 except Exception as e:
