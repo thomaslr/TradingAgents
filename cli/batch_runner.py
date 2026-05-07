@@ -54,6 +54,7 @@ class TokenTracker(BaseCallbackHandler):
                     if self.progress and self.task_id is not None:
                         tokens_str = f"[blue]{self.input_tokens}ᵢ[/blue]/[cyan]{self.output_tokens}ₒ[/cyan]"
                         self.progress.update(self.task_id, tokens=tokens_str)
+                    
 
 
 class StatusTracker(BaseCallbackHandler):
@@ -217,20 +218,22 @@ def run_batch_analysis(
                     ticker, date, provider, quick_model, deep_model, depth
                 )
 
-                if existing and existing["status"] == "completed":
-                    if force:
-                        # Delete old entry to allow re-run
+                if existing:
+                    if force or existing["status"] == "running":
+                        # Delete old or stale entry to allow re-run
                         registry.delete_run(existing["id"])
-                        console.print(f"  [yellow]↻ Force re-run: {ticker} {date}[/yellow]")
-                    elif skip_completed:
+                        if force:
+                            console.print(f"  [yellow]↻ Force re-run: {ticker} {date}[/yellow]")
+                    elif skip_completed and existing["status"] == "completed":
                         skipped += 1
                         progress.advance(task)
                         console.print(f"  [dim]⏭ Skipped (completed): {ticker} {date}[/dim]")
                         continue
-
-                if existing and existing["status"] == "running":
-                    # Stale running entry from a crash — delete and re-run
-                    registry.delete_run(existing["id"])
+                    elif existing["status"] == "completed":
+                        # Not skipping, but not forcing — just move on
+                        skipped += 1
+                        progress.advance(task)
+                        continue
 
                 # Create registry entry
                 report_dir = str(
@@ -261,7 +264,11 @@ def run_batch_analysis(
                     # Run analysis
                     start_time = time.time()
                     progress.update(task, status="[yellow]Initializing[/yellow]")
+                    
+                    # We use a simple timeout check (though a true async timeout is better, 
+                    # for a CLI this helps us catch loops between steps)
                     final_state, decision = graph.propagate(ticker, date)
+                    
                     elapsed = time.time() - start_time
 
                     # Extract results
