@@ -11,7 +11,7 @@ import logging
 # Configure logging at the very top so all modules inherit the settings
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-from api.routes import runs, reports, market, analysis, schedule
+from api.routes import runs, reports, market, analysis, schedule, memory
 from tradingagents.default_config import DEFAULT_CONFIG
 
 app = FastAPI(
@@ -38,6 +38,7 @@ app.include_router(reports.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
 app.include_router(schedule.router, prefix="/api")
+app.include_router(memory.router, prefix="/api")
 
 async def scheduler_loop():
     """Background task to poll for scheduled jobs."""

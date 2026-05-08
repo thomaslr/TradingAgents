@@ -10,7 +10,7 @@ const router = createRouter({
       meta: { title: 'Dashboard' },
     },
     {
-      path: '/chart/:ticker',
+      path: '/chart/:ticker?',
       name: 'chart',
       component: () => import('../views/ChartView.vue'),
       meta: { title: 'Chart' },
@@ -22,11 +22,17 @@ const router = createRouter({
       component: () => import('../views/AnalysisView.vue')
     },
     {
-      path: '/report/:ticker/:date',
+      path: '/report/:ticker?/:date?',
       name: 'report',
       component: () => import('../views/ReportView.vue'),
       meta: { title: 'Report' },
       props: true,
+    },
+    {
+      path: '/performance',
+      name: 'performance',
+      component: () => import('../views/PerformanceView.vue'),
+      meta: { title: 'Performance' },
     },
   ],
 })

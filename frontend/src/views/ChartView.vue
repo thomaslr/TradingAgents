@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { createChart, type IChartApi, type ISeriesApi, ColorType, CandlestickSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts'
-import { fetchOHLC, fetchRuns, type Run, type Candle, type VolumeItem } from '../api/client'
+import { fetchOHLC, fetchRuns, fetchTickers, type Run, type VolumeItem } from '../api/client'
 import { ArrowLeft, RefreshCw } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 
-const props = defineProps<{ ticker: string }>()
+const props = defineProps<{ ticker?: string }>()
 const router = useRouter()
 
 const chartContainer = ref<HTMLDivElement>()
@@ -15,8 +15,8 @@ let volumeSeries: ISeriesApi<'Histogram'> | null = null
 
 const loading = ref(true)
 const error = ref('')
-const period = ref('1y')
-const tickerInput = ref(props.ticker)
+const period = ref('3mo')
+const tickerInput = ref(props.ticker || '')
 const availableTickers = ref<any[]>([])
 const runs = ref<Run[]>([])
 
@@ -30,18 +30,22 @@ const periods = [
 ]
 
 onMounted(async () => {
-  await Promise.all([
-    loadChart(),
-    loadTickers()
-  ])
+  await loadTickers()
+  if (tickerInput.value) {
+    await loadChart()
+  }
 })
 
 async function loadTickers() {
   try {
     availableTickers.value = await fetchTickers()
-    // If the current ticker isn't in the list, add a placeholder
-    if (!availableTickers.value.find(t => t.ticker === props.ticker)) {
-      availableTickers.value.push({ ticker: props.ticker, name: props.ticker })
+    
+    if (!tickerInput.value && availableTickers.value.length > 0) {
+      tickerInput.value = availableTickers.value[0].ticker
+      router.replace({ name: 'chart', params: { ticker: tickerInput.value } })
+    } else if (tickerInput.value && !availableTickers.value.find(t => t.ticker === tickerInput.value)) {
+      // If the current ticker isn't in the list, add a placeholder
+      availableTickers.value.push({ ticker: tickerInput.value, name: tickerInput.value })
       availableTickers.value.sort((a, b) => a.ticker.localeCompare(b.ticker))
     }
   } catch (e) {
@@ -99,7 +103,9 @@ async function loadChart() {
       },
       timeScale: {
         borderColor: '#1e293b',
-        timeVisible: false,
+        timeVisible: true,
+        fixLeftEdge: true,
+        fixRightEdge: true,
       },
       autoSize: true,
     })

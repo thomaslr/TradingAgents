@@ -169,3 +169,27 @@ export async function addSchedule(tickers: string[], config: Record<string, any>
 export async function deleteSchedule(jobId: string): Promise<void> {
   await api.delete(`/schedule/${jobId}`)
 }
+
+// ── Memory / Performance ────────────────────────────────
+export interface MemoryEntry {
+  date: string
+  ticker: string
+  rating: string
+  pending: boolean
+  raw: string | null
+  alpha: string | null
+  holding: string | null
+  decision: string
+  reflection: string
+}
+
+export async function fetchMemoryEntries(): Promise<MemoryEntry[]> {
+  const { data } = await api.get<MemoryEntry[]>('/memory')
+  return data
+}
+
+export async function clearMemoryEntries(): Promise<void> {
+  await api.delete('/memory')
+}
+
+

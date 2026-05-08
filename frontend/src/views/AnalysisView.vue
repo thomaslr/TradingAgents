@@ -62,8 +62,16 @@ async function checkStatus() {
     
     if (status.running && status.job) {
       const tickers = status.job.tickers.join(', ')
-      currentJobParams.value = `Tickers: ${tickers} | Depth: ${depth.value} | Force: ${force.value}`
-      successMessage.value = `Analysis in progress...`
+      currentJobParams.value = `Batch: ${tickers}`
+      
+      const ticker = status.job.current_ticker || '...'
+      const date = status.job.current_date || '...'
+      const currentStatus = status.job.current_status || 'Initializing'
+      const inTokens = status.job.input_tokens || 0
+      const outTokens = status.job.output_tokens || 0
+      
+      successMessage.value = `Analysis in progress: ${ticker} (${date})`
+      currentJobParams.value = `Status: ${currentStatus} | Tokens: ${inTokens}ᵢ / ${outTokens}ₒ`
     } else {
       if (isRunning.value === false && isStopping.value === true) {
         isStopping.value = false

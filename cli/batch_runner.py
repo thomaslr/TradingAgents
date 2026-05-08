@@ -10,7 +10,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 import yfinance as yf
 import time
@@ -32,11 +32,12 @@ ALL_ANALYSTS = ["market", "social", "news", "fundamentals"]
 
 class TokenTracker(BaseCallbackHandler):
     """Callback handler to track total token usage across multiple LLM calls."""
-    def __init__(self, progress=None, task_id=None):
+    def __init__(self, progress=None, task_id=None, on_update: Optional[Callable[[dict], None]] = None):
         self.input_tokens = 0
         self.output_tokens = 0
         self.progress = progress
         self.task_id = task_id
+        self.on_update = on_update
 
     def on_llm_end(self, response, **kwargs) -> None:
         """Collect token usage from the LLM response metadata."""
@@ -53,16 +54,23 @@ class TokenTracker(BaseCallbackHandler):
                     self.output_tokens += usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
                     
                     if self.progress and self.task_id is not None:
-                        tokens_str = f"[blue]{self.input_tokens}ᵢ[/blue]/[cyan]{self.output_tokens}ₒ[/cyan]"
-                        self.progress.update(self.task_id, tokens=tokens_str)
+                        tokens_str = f"{self.input_tokens}ᵢ/{self.output_tokens}ₒ"
+                        self.progress.update(self.task_id, tokens=f"[blue]{self.input_tokens}ᵢ[/blue]/[cyan]{self.output_tokens}ₒ[/cyan]")
+                    
+                    if self.on_update:
+                        self.on_update({
+                            "input_tokens": self.input_tokens,
+                            "output_tokens": self.output_tokens
+                        })
                     
 
 
 class StatusTracker(BaseCallbackHandler):
     """Callback to update the progress bar status label."""
-    def __init__(self, progress, task_id):
+    def __init__(self, progress, task_id, on_update: Optional[Callable[[dict], None]] = None):
         self.progress = progress
         self.task_id = task_id
+        self.on_update = on_update
 
     def on_chain_start(self, serialized, inputs, **kwargs):
         """Update status when a new node/chain starts."""
@@ -74,6 +82,9 @@ class StatusTracker(BaseCallbackHandler):
             self.progress.update(self.task_id, status="[orange1]Debating[/orange1]")
         elif "trader" in name.lower():
             self.progress.update(self.task_id, status="[cyan]Planning Trade[/cyan]")
+        
+        if self.on_update:
+            self.on_update({"current_status": name.replace("_node", "").replace("_", " ").title()})
 
 
 def _expand_dates(date_from: str, date_to: str) -> List[str]:
@@ -178,6 +189,7 @@ def run_batch_analysis(
     skip_completed: bool = True,
     force: bool = False,
     abort_event: Optional[threading.Event] = None,
+    on_update: Optional[Callable[[dict], None]] = None,
 ) -> Dict[str, Any]:
     """Execute batch analysis sequentially.
 
@@ -225,6 +237,14 @@ def run_batch_analysis(
                     }
 
                 progress.update(task, description=f"{ticker} {date}")
+                if on_update:
+                    on_update({
+                        "current_ticker": ticker,
+                        "current_date": date,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "current_status": "Starting..."
+                    })
 
                 # Check existing run
                 existing = registry.find_run(
@@ -278,8 +298,8 @@ def run_batch_analysis(
 
                 try:
                     # Build the graph
-                    tracker = TokenTracker(progress, task)
-                    status_cb = StatusTracker(progress, task)
+                    tracker = TokenTracker(progress, task, on_update=on_update)
+                    status_cb = StatusTracker(progress, task, on_update=on_update)
                     graph = TradingAgentsGraph(
                         ALL_ANALYSTS,
                         config=config,

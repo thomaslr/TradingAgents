@@ -83,7 +83,11 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
         logger.info(f"Starting background analysis for {request.tickers} on {expanded_dates}")
         print(f"DEBUG: Tickers: {request.tickers}, Dates: {expanded_dates}, Provider: {config.get('llm_provider')}")
         
-        
+        def on_update(update_fields: dict):
+            with task_state.lock:
+                if task_state.active_job:
+                    task_state.active_job.update(update_fields)
+
         summary = run_batch_analysis(
             tickers=request.tickers,
             dates=expanded_dates,
@@ -91,7 +95,8 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
             registry=registry,
             skip_completed=request.skip_completed,
             force=request.force,
-            abort_event=task_state.abort_event
+            abort_event=task_state.abort_event,
+            on_update=on_update
         )
         logger.info(f"Background analysis complete: {summary}")
         print(f"DEBUG: Analysis complete: {summary}")
