@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import yfinance as yf
 import time
+import threading
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
 from langchain_core.callbacks import BaseCallbackHandler
@@ -176,6 +177,7 @@ def run_batch_analysis(
     registry: RunRegistry,
     skip_completed: bool = True,
     force: bool = False,
+    abort_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
     """Execute batch analysis sequentially.
 
@@ -211,6 +213,17 @@ def run_batch_analysis(
 
         for ticker in tickers:
             for date in dates:
+                if abort_event and abort_event.is_set():
+                    console.print(f"\n[bold yellow]⚠ Abort requested. Stopping batch...[/bold yellow]")
+                    progress.update(task, status="[yellow]Aborted[/yellow]")
+                    return {
+                        "total": total_jobs,
+                        "completed": completed,
+                        "skipped": skipped,
+                        "failed": failed,
+                        "aborted": True
+                    }
+
                 progress.update(task, description=f"{ticker} {date}")
 
                 # Check existing run
@@ -218,18 +231,31 @@ def run_batch_analysis(
                     ticker, date, provider, quick_model, deep_model, depth
                 )
 
-                if existing:
-                    if force or existing["status"] == "running":
-                        # Delete old or stale entry to allow re-run
-                        registry.delete_run(existing["id"])
+                if existing or force:
+                    # We also check if we're forcing so we can wipe ANY provider/model config for this date
+                    if force or (existing and existing["status"] == "running"):
+                        # Clear ALL existing runs for this ticker/date to prevent duplicates
+                        runs_to_clear = registry.list_runs(ticker=ticker)
+                        runs_to_clear = [r for r in runs_to_clear if r["trade_date"] == date]
+                        
+                        for r in runs_to_clear:
+                            # Clean up file system
+                            report_dir = r.get("report_dir")
+                            if report_dir and Path(report_dir).exists():
+                                import shutil
+                                shutil.rmtree(report_dir, ignore_errors=True)
+                        
+                        # Delete from DB
+                        registry.delete_runs_for_ticker_date(ticker, date)
+
                         if force:
-                            console.print(f"  [yellow]↻ Force re-run: {ticker} {date}[/yellow]")
-                    elif skip_completed and existing["status"] == "completed":
+                            console.print(f"  [yellow]↻ Force re-run (cleared existing): {ticker} {date}[/yellow]")
+                    elif existing and skip_completed and existing["status"] == "completed":
                         skipped += 1
                         progress.advance(task)
                         console.print(f"  [dim]⏭ Skipped (completed): {ticker} {date}[/dim]")
                         continue
-                    elif existing["status"] == "completed":
+                    elif existing and existing["status"] == "completed":
                         # Not skipping, but not forcing — just move on
                         skipped += 1
                         progress.advance(task)

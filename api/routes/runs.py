@@ -18,8 +18,11 @@ def list_runs(
 
 import yfinance as yf
 from functools import lru_cache
+from pathlib import Path
+import shutil
+from pydantic import BaseModel
 
-@lru_cache(max_size=100)
+@lru_cache(maxsize=100)
 def _get_company_name(ticker: str) -> str:
     """Fetch company name from yfinance with simple caching."""
     try:
@@ -39,10 +42,35 @@ def list_unique_tickers(registry: RunRegistry = Depends(get_registry)):
         for t in unique_tickers
     ]
 
+class BatchDeleteRequest(BaseModel):
+    run_ids: List[int]
+
+@router.post("/batch-delete")
+def batch_delete_runs(request: BatchDeleteRequest, registry: RunRegistry = Depends(get_registry)):
+    """Delete multiple runs from history and their report directories."""
+    try:
+        deleted_count = 0
+        for run_id in request.run_ids:
+            run = registry.get_run(run_id)
+            if run and run.get("report_dir"):
+                report_path = Path(run["report_dir"])
+                if report_path.exists() and report_path.is_dir():
+                    shutil.rmtree(report_path, ignore_errors=True)
+            registry.delete_run(run_id)
+            deleted_count += 1
+        return {"status": "success", "message": f"{deleted_count} runs deleted."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.delete("/{run_id}")
 def delete_run(run_id: int, registry: RunRegistry = Depends(get_registry)):
-    """Delete a specific run from history."""
+    """Delete a specific run from history and its report directory."""
     try:
+        run = registry.get_run(run_id)
+        if run and run.get("report_dir"):
+            report_path = Path(run["report_dir"])
+            if report_path.exists() and report_path.is_dir():
+                shutil.rmtree(report_path, ignore_errors=True)
         registry.delete_run(run_id)
         return {"status": "success", "message": f"Run {run_id} deleted."}
     except Exception as e:

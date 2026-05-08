@@ -1323,5 +1323,85 @@ def batch(
         registry.close()
 
 
+schedule_app = typer.Typer(name="schedule", help="Manage scheduled analysis jobs")
+app.add_typer(schedule_app)
+
+@schedule_app.command("list")
+def list_schedules():
+    """List all scheduled analysis jobs."""
+    from tradingagents.db.schedule_manager import ScheduleManager
+    db_path = Path(DEFAULT_CONFIG["db_path"])
+    schedule_path = db_path.parent / "schedule.json"
+    manager = ScheduleManager(schedule_path)
+    
+    jobs = manager.list_jobs()
+    if not jobs:
+        console.print("[yellow]No scheduled jobs found.[/yellow]")
+        return
+        
+    table = Table(title="Scheduled Jobs")
+    table.add_column("ID", style="cyan")
+    table.add_column("Tickers", style="magenta")
+    table.add_column("Interval", style="green")
+    table.add_column("Next Run", style="yellow")
+    
+    for job in jobs:
+        interval = f"{job['interval_minutes']}m"
+        if job['interval_minutes'] >= 1440:
+            interval = f"{job['interval_minutes']/1440}d"
+        table.add_row(job['id'][:8], ",".join(job['tickers']), interval, job['next_run'])
+        
+    console.print(table)
+
+@schedule_app.command("add")
+def add_schedule(
+    tickers: str = typer.Option(..., "--tickers", "-t", help="Comma-separated tickers"),
+    interval: int = typer.Option(1440, "--interval", "-i", help="Interval in minutes (default 1440 = 24h)"),
+):
+    """Add a new scheduled analysis job."""
+    from tradingagents.db.schedule_manager import ScheduleManager
+    import os
+    
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not ticker_list:
+        console.print("[red]No tickers provided.[/red]")
+        raise typer.Exit(1)
+        
+    provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+    config = DEFAULT_CONFIG.copy()
+    config["llm_provider"] = provider
+    config["quick_think_llm"] = _resolve_provider_var(provider, "QUICK_THINK_MODEL", config["quick_think_llm"])
+    config["deep_think_llm"] = _resolve_provider_var(provider, "DEEP_THINK_MODEL", config["deep_think_llm"])
+    
+    db_path = Path(DEFAULT_CONFIG["db_path"])
+    schedule_path = db_path.parent / "schedule.json"
+    manager = ScheduleManager(schedule_path)
+    
+    job = manager.add_job(ticker_list, config, interval)
+    console.print(f"[green]Successfully added schedule job {job['id']} for {tickers}[/green]")
+
+@schedule_app.command("delete")
+def delete_schedule(
+    job_id: str = typer.Argument(..., help="ID of the job to delete")
+):
+    """Delete a scheduled analysis job."""
+    from tradingagents.db.schedule_manager import ScheduleManager
+    db_path = Path(DEFAULT_CONFIG["db_path"])
+    schedule_path = db_path.parent / "schedule.json"
+    manager = ScheduleManager(schedule_path)
+    
+    # Try to match full ID or prefix
+    jobs = manager.list_jobs()
+    matches = [j for j in jobs if j["id"].startswith(job_id)]
+    
+    if not matches:
+        console.print(f"[red]Job {job_id} not found.[/red]")
+        return
+        
+    for match in matches:
+        manager.delete_job(match["id"])
+        console.print(f"[green]Deleted job {match['id']}[/green]")
+
+
 if __name__ == "__main__":
     app()

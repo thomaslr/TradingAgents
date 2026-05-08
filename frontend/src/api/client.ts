@@ -41,6 +41,10 @@ export async function deleteRun(runId: number): Promise<void> {
   await api.delete(`/runs/${runId}`)
 }
 
+export async function deleteRuns(runIds: number[]): Promise<void> {
+  await api.post('/runs/batch-delete', { run_ids: runIds })
+}
+
 export interface TickerInfo {
   ticker: string
   name: string
@@ -98,6 +102,10 @@ export interface AnalysisRequest {
   dates: string[]
   force?: boolean
   skip_completed?: boolean
+  llm_provider?: string
+  quick_think_llm?: string
+  deep_think_llm?: string
+  max_debate_rounds?: number
 }
 
 export async function startAnalysis(request: AnalysisRequest) {
@@ -105,8 +113,59 @@ export async function startAnalysis(request: AnalysisRequest) {
   return data
 }
 
-// ── Health ───────────────────────────────────────────────
+export async function stopAnalysis() {
+  const { data } = await api.post('/analysis/stop')
+  return data
+}
+
+export async function fetchAnalysisStatus(): Promise<{ running: boolean, job: any }> {
+  const { data } = await api.get('/analysis/status')
+  return data
+}
+
+// ── Health & Config ──────────────────────────────────────
 export async function healthCheck() {
   const { data } = await api.get('/health')
   return data
+}
+
+export interface AppConfig {
+  llm_provider: string
+  quick_think_llm: string
+  deep_think_llm: string
+}
+
+export async function fetchConfig(): Promise<AppConfig> {
+  const { data } = await api.get('/config')
+  return data
+}
+
+export async function fetchOllamaModels(): Promise<string[]> {
+  const { data } = await api.get('/ollama/tags')
+  return data
+}
+
+// ── Schedule ────────────────────────────────────────────
+export interface ScheduleJob {
+  id: string
+  tickers: string[]
+  config: Record<string, any>
+  interval_minutes: number
+  last_run: string | null
+  next_run: string | null
+  created_at: string
+}
+
+export async function fetchSchedules(): Promise<ScheduleJob[]> {
+  const { data } = await api.get('/schedule')
+  return data
+}
+
+export async function addSchedule(tickers: string[], config: Record<string, any>, interval_minutes: number): Promise<ScheduleJob> {
+  const { data } = await api.post('/schedule', { tickers, config, interval_minutes })
+  return data.job
+}
+
+export async function deleteSchedule(jobId: string): Promise<void> {
+  await api.delete(`/schedule/${jobId}`)
 }

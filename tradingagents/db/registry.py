@@ -89,6 +89,11 @@ class RunRegistry:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_run(self, run_id: int) -> Optional[Dict[str, Any]]:
+        """Return the run row by its ID."""
+        row = self.conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
     def list_runs(
         self,
         ticker: Optional[str] = None,
@@ -185,6 +190,11 @@ class RunRegistry:
     def delete_run(self, run_id: int) -> None:
         """Remove a run entry (used by --force to allow re-creation)."""
         self.conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+        self.conn.commit()
+
+    def delete_runs_for_ticker_date(self, ticker: str, trade_date: str) -> None:
+        """Remove all runs for a specific ticker and date."""
+        self.conn.execute("DELETE FROM runs WHERE ticker = ? AND trade_date = ?", (ticker, trade_date))
         self.conn.commit()
 
     # ------------------------------------------------------------------

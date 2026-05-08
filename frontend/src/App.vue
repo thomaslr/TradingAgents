@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { RouterView, RouterLink, useRoute } from 'vue-router'
-import { LayoutDashboard, CandlestickChart, FileText } from 'lucide-vue-next'
+import { LayoutDashboard, CandlestickChart, FileText, CalendarClock } from 'lucide-vue-next'
 import { computed } from 'vue'
 
 const route = useRoute()
@@ -8,6 +8,7 @@ const currentRoute = computed(() => route.name)
 
 const navItems = [
   { name: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, to: '/' },
+  { name: 'analysis', label: 'Analysis', icon: CalendarClock, to: '/analysis' },
   { name: 'chart', label: 'Charts', icon: CandlestickChart, to: '/chart/SPY' },
   { name: 'report', label: 'Reports', icon: FileText, to: '/report/SPY/2026-05-06' },
 ]

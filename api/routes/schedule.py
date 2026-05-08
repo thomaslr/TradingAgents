@@ -1,0 +1,39 @@
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+
+from api.dependencies import get_schedule_manager
+from tradingagents.db.schedule_manager import ScheduleManager
+
+router = APIRouter(prefix="/schedule", tags=["Schedule"])
+
+class ScheduleRequest(BaseModel):
+    tickers: List[str]
+    config: Dict[str, Any]
+    interval_minutes: int
+
+@router.get("", response_model=List[Dict[str, Any]])
+def list_schedules(manager: ScheduleManager = Depends(get_schedule_manager)):
+    """List all scheduled analysis jobs."""
+    return manager.list_jobs()
+
+@router.post("")
+def add_schedule(request: ScheduleRequest, manager: ScheduleManager = Depends(get_schedule_manager)):
+    """Add a new scheduled analysis job."""
+    try:
+        job = manager.add_job(
+            tickers=request.tickers,
+            config=request.config,
+            interval_minutes=request.interval_minutes
+        )
+        return {"status": "success", "job": job}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/{job_id}")
+def delete_schedule(job_id: str, manager: ScheduleManager = Depends(get_schedule_manager)):
+    """Delete a scheduled analysis job."""
+    deleted = manager.delete_job(job_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"status": "success", "message": f"Job {job_id} deleted"}
