@@ -22,10 +22,9 @@ let refreshInterval: ReturnType<typeof setInterval> | null = null
 onMounted(async () => {
   await loadRuns()
   refreshInterval = setInterval(() => {
-    if (runs.value.some(r => r.status === 'running' || r.status === 'pending')) {
-      loadRuns(true)
-    }
+    loadRuns(true)
   }, 10000)
+
 })
 
 onUnmounted(() => {

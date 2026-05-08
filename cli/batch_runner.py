@@ -88,15 +88,18 @@ class StatusTracker(BaseCallbackHandler):
 
 
 def _expand_dates(date_from: str, date_to: str) -> List[str]:
-    """Generate every calendar day in [date_from, date_to] inclusive."""
+    """Generate every trading day (Mon-Fri) in [date_from, date_to] inclusive."""
     start = datetime.strptime(date_from, "%Y-%m-%d")
     end = datetime.strptime(date_to, "%Y-%m-%d")
     dates = []
     current = start
     while current <= end:
-        dates.append(current.strftime("%Y-%m-%d"))
+        # 0=Monday, 6=Sunday. Only add if it's a weekday.
+        if current.weekday() < 5:
+            dates.append(current.strftime("%Y-%m-%d"))
         current += timedelta(days=1)
     return dates
+
 
 
 def _fetch_close_price(ticker: str, date_str: str) -> Optional[float]:
