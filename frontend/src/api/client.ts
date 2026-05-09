@@ -188,6 +188,7 @@ export async function fetchMemoryEntries(): Promise<MemoryEntry[]> {
   return data
 }
 
+
 export async function clearMemoryEntries(): Promise<void> {
   await api.delete('/memory')
 }

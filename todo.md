@@ -12,3 +12,9 @@
 - [ ] **Live Portfolio Integration**
     - **Concept**: Transition from paper trading to real execution.
     - **Implementation**: Integrate with IBKR/Alpaca APIs to execute the Portfolio Manager's decisions.
+- [ ] Investigate additional news sources:
+    - [ ] Finnhub (Earnings transcripts, SEC filings)
+    - [ ] NewsAPI.org (General world news)
+    - [ ] Polygon.io (Low-latency market news)
+    - [ ] Direct RSS feeds (Bloomberg, Reuters, CNBC)
+    - [ ] Social Media Integration (Reddit, X/Twitter scrapers for true sentiment)

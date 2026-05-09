@@ -62,22 +62,14 @@ async function checkStatus() {
     
     if (status.running && status.job) {
       const tickers = status.job.tickers.join(', ')
-      currentJobParams.value = `Batch: ${tickers}`
-      
-      const ticker = status.job.current_ticker || '...'
-      const date = status.job.current_date || '...'
-      const currentStatus = status.job.current_status || 'Initializing'
-      const inTokens = status.job.input_tokens || 0
-      const outTokens = status.job.output_tokens || 0
-      
-      successMessage.value = `Analysis in progress: ${ticker} (${date})`
-      currentJobParams.value = `Status: ${currentStatus} | Tokens: ${inTokens}ᵢ / ${outTokens}ₒ`
+      currentJobParams.value = `Tickers: ${tickers} | Depth: ${depth.value} | Force: ${force.value}`
+      successMessage.value = `Analysis in progress...`
     } else {
       if (isRunning.value === false && isStopping.value === true) {
         isStopping.value = false
         successMessage.value = 'Analysis stopped.'
       }
-      if (!status.running && (successMessage.value.includes('in progress') || successMessage.value.includes('started'))) {
+      if (!status.running && successMessage.value.includes('in progress')) {
         successMessage.value = 'Analysis complete.'
       }
     }
@@ -489,6 +481,22 @@ select {
   padding-right: 3rem;
 }
 
+.scan-anim {
+  width: 200%;
+  animation: scan 4s linear infinite;
+}
+
+@keyframes scan {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.5;
+  cursor: pointer;
+}
+</style>
 .scan-anim {
   width: 200%;
   animation: scan 4s linear infinite;
