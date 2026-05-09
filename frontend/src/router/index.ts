@@ -28,6 +28,13 @@ const router = createRouter({
       meta: { title: 'Report' },
       props: true,
     },
+    {
+      path: '/performance',
+      name: 'performance',
+      component: () => import('../views/PerformanceView.vue'),
+      meta: { title: 'Performance' },
+    },
+
   ],
 })
 

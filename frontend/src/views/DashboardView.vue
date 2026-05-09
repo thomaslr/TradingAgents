@@ -257,6 +257,24 @@ function formatDate(dateStr: string | null): string {
             class="w-full pl-9 pr-4 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg text-sm focus:outline-none focus:border-[var(--color-accent-primary)] transition-colors text-[var(--color-text-primary)]"
           />
         </div>
+        <div class="flex items-center gap-1 p-1 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg">
+          <button 
+            @click="() => {
+              const d = new Date();
+              d.setMonth(d.getMonth() - 6);
+              startDate = d.toISOString().split('T')[0];
+            }"
+            class="px-2 py-1 text-[10px] font-bold hover:text-white text-[var(--color-text-muted)]"
+          >6M</button>
+          <button 
+            @click="() => {
+              const d = new Date(new Date().getFullYear(), 0, 1);
+              startDate = d.toISOString().split('T')[0];
+            }"
+            class="px-2 py-1 text-[10px] font-bold hover:text-white text-[var(--color-text-muted)]"
+          >YTD</button>
+        </div>
+
         <div class="flex items-center gap-2">
           <input 
             v-model="startDate"
@@ -337,11 +355,12 @@ function formatDate(dateStr: string | null): string {
                 <div class="flex items-center gap-1">Date <ArrowUp v-if="sortColumn === 'trade_date' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'trade_date' && sortDirection === 'desc'" :size="12"/></div>
               </th>
               <th class="px-5 py-3 text-left cursor-pointer hover:text-[var(--color-text-primary)]" @click="handleSort('rating')">
-                <div class="flex items-center gap-1">Rating <ArrowUp v-if="sortColumn === 'rating' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'rating' && sortDirection === 'desc'" :size="12"/></div>
+                <div class="flex items-center gap-1">Rating (AI) <ArrowUp v-if="sortColumn === 'rating' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'rating' && sortDirection === 'desc'" :size="12"/></div>
               </th>
               <th class="px-5 py-3 text-left cursor-pointer hover:text-[var(--color-text-primary)]" @click="handleSort('action')">
-                <div class="flex items-center gap-1">Action <ArrowUp v-if="sortColumn === 'action' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'action' && sortDirection === 'desc'" :size="12"/></div>
+                <div class="flex items-center gap-1">Action (PM) <ArrowUp v-if="sortColumn === 'action' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'action' && sortDirection === 'desc'" :size="12"/></div>
               </th>
+
               <th class="px-5 py-3 text-right cursor-pointer hover:text-[var(--color-text-primary)]" @click="handleSort('close_price')">
                 <div class="flex items-center justify-end gap-1">Close Price <ArrowUp v-if="sortColumn === 'close_price' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'close_price' && sortDirection === 'desc'" :size="12"/></div>
               </th>

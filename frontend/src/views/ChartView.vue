@@ -19,6 +19,10 @@ const period = ref('3mo')
 const tickerInput = ref(props.ticker || '')
 const availableTickers = ref<any[]>([])
 const runs = ref<Run[]>([])
+const showBuy = ref(true)
+const showSell = ref(true)
+const showHold = ref(false)
+
 
 const periods = [
   { label: '1M', value: '1mo' },
@@ -146,8 +150,15 @@ async function loadChart() {
       
       const markers = runs.value
         .filter(r => r.rating)
+        // Filter by user toggles
+        .filter(r => {
+          const rating = r.rating.toLowerCase()
+          if (rating.includes('buy') || rating.includes('overweight')) return showBuy.value
+          if (rating.includes('sell') || rating.includes('underweight')) return showSell.value
+          if (rating.includes('hold')) return showHold.value
+          return true
+        })
         // Ensure the trade_date actually exists in the chart data!
-        // If the agent ran on a weekend or a day yfinance hasn't returned data for yet, we must skip the marker or the chart will crash.
         .filter(r => validTimes.has(r.trade_date))
         .map(r => ({
           time: r.trade_date,
@@ -161,6 +172,7 @@ async function loadChart() {
           text: r.rating || '',
         }))
         .sort((a, b) => a.time.localeCompare(b.time))
+
 
       if (markers.length > 0) {
         createSeriesMarkers(candleSeries, markers as any)
@@ -185,7 +197,8 @@ function changeTicker() {
   }
 }
 
-watch(period, () => loadChart())
+watch([period, showBuy, showSell, showHold], () => loadChart())
+
 </script>
 
 <template>
@@ -245,20 +258,35 @@ watch(period, () => loadChart())
       <div v-show="!loading && !error" ref="chartContainer" class="h-[400px] md:h-[600px]"></div>
     </div>
 
-    <!-- Agent Decision Legend -->
-    <div v-if="runs.length > 0" class="mt-4 flex flex-wrap gap-4 text-xs text-[var(--color-text-muted)]">
-      <span class="flex items-center gap-1.5">
+    <!-- Agent Decision Legend & Toggles -->
+    <div v-if="runs.length > 0" class="mt-4 flex flex-wrap gap-6 text-xs font-medium">
+      <button 
+        @click="showBuy = !showBuy"
+        class="flex items-center gap-2 transition-opacity"
+        :class="showBuy ? 'opacity-100' : 'opacity-40'"
+      >
         <span class="w-3 h-3 rounded-full bg-[var(--color-signal-buy)]"></span>
-        Buy / Overweight
-      </span>
-      <span class="flex items-center gap-1.5">
+        <span :class="showBuy ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'">Buy / Overweight</span>
+      </button>
+
+      <button 
+        @click="showSell = !showSell"
+        class="flex items-center gap-2 transition-opacity"
+        :class="showSell ? 'opacity-100' : 'opacity-40'"
+      >
         <span class="w-3 h-3 rounded-full bg-[var(--color-signal-sell)]"></span>
-        Sell / Underweight
-      </span>
-      <span class="flex items-center gap-1.5">
+        <span :class="showSell ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'">Sell / Underweight</span>
+      </button>
+
+      <button 
+        @click="showHold = !showHold"
+        class="flex items-center gap-2 transition-opacity"
+        :class="showHold ? 'opacity-100' : 'opacity-40'"
+      >
         <span class="w-3 h-3 rounded-full bg-[var(--color-signal-hold)]"></span>
-        Hold
-      </span>
+        <span :class="showHold ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'">Hold</span>
+      </button>
     </div>
+
   </div>
 </template>
