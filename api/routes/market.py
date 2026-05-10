@@ -10,36 +10,32 @@ router = APIRouter(prefix="/market", tags=["Market Data"])
 @router.get("/ohlc/{ticker}")
 def get_ohlc_data(
     ticker: str,
-    period: Optional[str] = Query(None, description="Time period (e.g., 1mo, 6mo, 1y, 5y)"),
-    start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
-    end: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
-    interval: str = Query("1d", description="Time interval (e.g., 1d, 1wk)")
+    period: Optional[str] = Query(None),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    interval: str = Query("1d")
 ):
     """Fetch OHLC data for lightweight charts."""
     try:
-        # Normalize inputs
-        start_str = start.strip() if start and start.strip() else None
-        end_str = end.strip() if end and end.strip() else None
-        period_val = period if period else "1y"
-
-        logger.info(f"OHLC Request: {ticker} | Start: {start_str} | End: {end_str} | Period: {period_val}")
-
-        if start_str and end_str:
-            data = yf.download(ticker, start=start_str, end=end_str, interval=interval, progress=False)
+        t = yf.Ticker(ticker)
+        
+        # Priority: start/end strings
+        if start and end:
+            data = t.history(start=start, end=end, interval=interval)
+            data = data.sort_index()
+            # Ensure index is naive for precise slicing
+            if data.index.tz is not None:
+                data.index = data.index.tz_localize(None)
+            data = data.loc[start:end]
         else:
-            data = yf.download(ticker, period=period_val, interval=interval, progress=False)
+            p = period if period else "1y"
+            data = t.history(period=p, interval=interval)
 
         if data.empty:
-            logger.warning(f"No OHLC data found for {ticker} with current params")
-            raise HTTPException(status_code=404, detail=f"No data found for {ticker}")
+            raise HTTPException(status_code=404, detail="No data")
             
         # Format data for Lightweight Charts
-        if isinstance(data.columns, pd.MultiIndex):
-            ticker_data = data.xs(ticker, level=1, axis=1) if ticker in data.columns.levels[1] else data
-        else:
-            ticker_data = data
-            
-        df = ticker_data.reset_index()
+        df = data.reset_index()
         date_col = 'Date' if 'Date' in df.columns else 'Datetime' if 'Datetime' in df.columns else df.columns[0]
         
         candles = []
@@ -63,7 +59,7 @@ def get_ohlc_data(
             
         return {
             "ticker": ticker,
-            "period": period_val,
+            "period": period or "1y",
             "interval": interval,
             "candles": candles,
             "volumes": volumes
@@ -71,5 +67,5 @@ def get_ohlc_data(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Unexpected error fetching OHLC for {ticker}")
+        logger.exception(f"Error fetching OHLC for {ticker}")
         raise HTTPException(status_code=500, detail=str(e))

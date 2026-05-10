@@ -2,7 +2,7 @@
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { createChart, type IChartApi, type ISeriesApi, ColorType, CandlestickSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts'
 import { fetchOHLC, fetchRuns, fetchTickers, type Run, type VolumeItem } from '../api/client'
-import { ArrowLeft, RefreshCw } from 'lucide-vue-next'
+import { ArrowLeft, RefreshCw, Clock } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 
 const props = defineProps<{ ticker?: string }>()
@@ -96,7 +96,7 @@ async function loadChart() {
 
   try {
     // Use custom dates if both are valid, otherwise use preset period
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/
+    const dateRegex = /^\d{4}-\d{1,2}-\d{1,2}$/
     const useDates = dateRegex.test(dateFrom.value) && dateRegex.test(dateTo.value)
     
     console.log(`Loading Chart: ${tickerInput.value} | UseDates: ${useDates} (${dateFrom.value} to ${dateTo.value}) | Period: ${period.value}`)
@@ -237,9 +237,9 @@ function changeTicker() {
 // Watchers for automatic updates
 watch([period, showBuy, showSell, showHold], () => loadChart())
 
-// Auto-refresh when dates match the YYYY-MM-DD pattern
+// Auto-refresh when dates match the YYYY-MM-DD pattern (forgiving of single digits)
 watch([dateFrom, dateTo], ([f, t]) => {
-  const dateRegex = /^\d{4}-\d{2}-\d{2}$/
+  const dateRegex = /^\d{4}-\d{1,2}-\d{1,2}$/
   if ((!f && !t) || (dateRegex.test(f) && dateRegex.test(t))) {
     loadChart()
   }
@@ -310,7 +310,13 @@ watch([dateFrom, dateTo], ([f, t]) => {
     </div>
 
     <!-- Chart -->
-    <div class="rounded-xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] overflow-hidden">
+    <div class="relative rounded-xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] overflow-hidden">
+      <!-- Active Filter Badge -->
+      <div v-if="dateFrom && dateTo" class="absolute top-4 right-4 z-10 px-3 py-1 bg-[var(--color-accent-primary)] text-white text-[10px] font-black uppercase rounded-full shadow-lg flex items-center gap-2">
+        <Clock :size="12" />
+        Custom Range: {{ dateFrom }} to {{ dateTo }}
+      </div>
+
       <div v-if="loading" class="h-[400px] md:h-[600px] flex items-center justify-center">
         <RefreshCw :size="24" class="animate-spin text-[var(--color-text-muted)]" />
       </div>
