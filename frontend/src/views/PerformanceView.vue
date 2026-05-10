@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
-import { fetchMemoryEntries, clearMemoryEntries, type MemoryEntry } from '../api/client'
+import { fetchMemoryEntries, clearMemoryEntries, fetchTickers, type MemoryEntry } from '../api/client'
 import { createChart, ColorType, LineSeries } from 'lightweight-charts'
 import { Trophy, RefreshCw, Info, Filter, BarChart3, Trash2 } from 'lucide-vue-next'
 
 const loading = ref(true)
 const entries = ref<MemoryEntry[]>([])
 const chartContainer = ref<HTMLDivElement>()
+const registryTickers = ref<{ticker: string, name: string}[]>([])
 
 // Filters
 const showCosts = ref(false)
@@ -49,9 +50,20 @@ let strategySeries: any = null
 let benchmarkSeries: any = null
 
 onMounted(async () => {
-  await loadData()
+  await Promise.all([
+    loadData(),
+    loadRegistryTickers()
+  ])
   initChart()
 })
+
+async function loadRegistryTickers() {
+  try {
+    registryTickers.value = await fetchTickers()
+  } catch (e) {
+    console.error('Failed to load registry tickers', e)
+  }
+}
 
 async function loadData() {
   loading.value = true
@@ -87,8 +99,10 @@ async function handleClearMemory() {
 
 
 const availableTickers = computed(() => {
-  const tickers = new Set(entries.value.map(e => e.ticker))
-  return ['ALL', ...Array.from(tickers).sort()]
+  const memoryTickers = entries.value.map(e => e.ticker)
+  const regTickers = registryTickers.value.map(t => t.ticker)
+  const all = new Set([...memoryTickers, ...regTickers])
+  return ['ALL', ...Array.from(all).sort()]
 })
 
 function parsePct(val: string | null): number {

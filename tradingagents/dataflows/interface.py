@@ -26,6 +26,17 @@ from .alpha_vantage_common import AlphaVantageRateLimitError
 
 # Configuration and routing logic
 from .config import get_config
+from .tool_cache import ToolCache
+
+_cache_instance = None
+
+def _get_tool_cache():
+    """Lazy initialization of the tool cache."""
+    global _cache_instance
+    if _cache_instance is None:
+        config = get_config()
+        _cache_instance = ToolCache(config["data_cache_dir"])
+    return _cache_instance
 
 # Tools organized by category
 TOOLS_CATEGORIES = {
@@ -147,6 +158,12 @@ def route_to_vendor(method: str, *args, **kwargs):
         if vendor not in fallback_vendors:
             fallback_vendors.append(vendor)
 
+    # Try cache first
+    cache = _get_tool_cache()
+    cached_result = cache.get(method, *args, **kwargs)
+    if cached_result is not None:
+        return cached_result
+
     for vendor in fallback_vendors:
         if vendor not in VENDOR_METHODS[method]:
             continue
@@ -155,7 +172,10 @@ def route_to_vendor(method: str, *args, **kwargs):
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
 
         try:
-            return impl_func(*args, **kwargs)
+            result = impl_func(*args, **kwargs)
+            # Store in cache
+            cache.set(method, result, *args, **kwargs)
+            return result
         except AlphaVantageRateLimitError:
             continue  # Only rate limits trigger fallback
 
