@@ -13,7 +13,21 @@ import {
 } from '../api/client'
 import { Play, Square, Clock, Trash2, CheckCircle, RefreshCw, AlertCircle } from 'lucide-vue-next'
 
+interface QueuedJob {
+  id: string
+  tickers: string[]
+  dateFrom: string
+  dateTo: string
+  provider: string
+  quickModel: string
+  deepModel: string
+  depth: number
+  force: boolean
+}
+
 const schedules = ref<ScheduleJob[]>([])
+const researchQueue = ref<QueuedJob[]>(JSON.parse(localStorage.getItem('trading_queue') || '[]'))
+const isQueueRunning = ref(localStorage.getItem('trading_queue_running') === 'true')
 const ollamaModels = ref<string[]>([])
 const loading = ref(false)
 const fetchingModels = ref(false)
@@ -22,6 +36,7 @@ const error = ref('')
 const successMessage = ref('')
 const isRunning = ref(false)
 const currentJobParams = ref<string>('')
+const activeConfig = ref<any>(null)
 let statusPolling: any = null
 
 // Form State
@@ -49,6 +64,8 @@ watch(dateFrom, (v) => localStorage.setItem('trading_from', v))
 watch(dateTo, (v) => localStorage.setItem('trading_to', v))
 watch(force, (v) => localStorage.setItem('trading_force', String(v)))
 watch(depth, (v) => localStorage.setItem('trading_depth', String(v)))
+watch(researchQueue, (v) => localStorage.setItem('trading_queue', JSON.stringify(v)), { deep: true })
+watch(isQueueRunning, (v) => localStorage.setItem('trading_queue_running', String(v)))
 
 onMounted(async () => {
   await loadDefaultConfig()
@@ -67,8 +84,8 @@ async function checkStatus() {
     const status = await fetchAnalysisStatus()
     isRunning.value = status.running
     if (status.running && status.job) {
+      activeConfig.value = status.job.config
       const tickers = status.job.tickers.join(', ')
-      // Update with currently processing ticker if available from backend
       const current = status.job.current_ticker 
         ? `Analyzing: ${status.job.current_ticker} (${status.job.current_date})` 
         : `Initializing...`
@@ -76,11 +93,20 @@ async function checkStatus() {
       currentJobParams.value = `${current} | Batch: ${tickers}`
       successMessage.value = `Analysis in progress...`
     } else {
+      activeConfig.value = null
       if (isRunning.value === false && isStopping.value === true) {
         isStopping.value = false
         successMessage.value = 'Analysis stopped.'
+        isQueueRunning.value = false // Stop queue if manually stopped
       }
-      if (!status.running && successMessage.value.includes('in progress')) {
+      
+      // Auto-advance queue if active
+      if (!status.running && isQueueRunning.value && researchQueue.value.length > 0) {
+        runNextInQueue()
+      } else if (!status.running && isQueueRunning.value && researchQueue.value.length === 0) {
+        isQueueRunning.value = false
+        successMessage.value = 'Research Stack Complete.'
+      } else if (!status.running && successMessage.value.includes('in progress')) {
         successMessage.value = 'Analysis complete.'
       }
     }
@@ -202,6 +228,99 @@ async function handleSubmit() {
   }
 }
 
+function addToQueue() {
+  if (!tickersInput.value.trim()) {
+    error.value = 'Please enter at least one ticker'
+    return
+  }
+  
+  const tickers = tickersInput.value.split(',').map(t => t.trim().toUpperCase()).filter(t => t)
+  researchQueue.value.push({
+    id: Math.random().toString(36).substring(7),
+    tickers,
+    dateFrom: dateFrom.value,
+    dateTo: dateTo.value,
+    provider: provider.value,
+    quickModel: quickModel.value,
+    deepModel: deepModel.value,
+    depth: depth.value,
+    force: force.value
+  })
+  successMessage.value = 'Run added to Research Queue.'
+  error.value = ''
+}
+
+function removeFromQueue(index: number) {
+  researchQueue.value.splice(index, 1)
+}
+
+async function runQueue() {
+  if (researchQueue.value.length === 0) return
+  isQueueRunning.value = true
+  await runNextInQueue()
+}
+
+async function runNextInQueue() {
+  if (researchQueue.value.length === 0) {
+    isQueueRunning.value = false
+    return
+  }
+  
+  const job = researchQueue.value[0]
+  loading.value = true
+  
+  try {
+    let dates: string[] = []
+    if (job.dateFrom && job.dateTo) {
+      dates = [job.dateFrom, job.dateTo]
+    } else {
+      dates = [new Date().toISOString().split('T')[0]]
+    }
+
+    await startAnalysis({
+      tickers: job.tickers,
+      dates,
+      force: job.force,
+      skip_completed: !job.force,
+      llm_provider: job.provider,
+      quick_think_llm: job.quickModel,
+      deep_think_llm: job.deepModel,
+      max_debate_rounds: job.depth
+    })
+    
+    // Remove from queue AFTER starting successfully
+    researchQueue.value.shift()
+    isRunning.value = true
+  } catch (e: any) {
+    error.value = `Queue Error: ${e.message}`
+    isQueueRunning.value = false
+  } finally {
+    loading.value = false
+  }
+}
+
+function sweepDepth() {
+  if (!tickersInput.value.trim()) {
+    error.value = 'Please enter a ticker first'
+    return
+  }
+  const tickers = tickersInput.value.split(',').map(t => t.trim().toUpperCase()).filter(t => t)
+  for (let i = 1; i <= 5; i++) {
+    researchQueue.value.push({
+      id: Math.random().toString(36).substring(7),
+      tickers,
+      dateFrom: dateFrom.value,
+      dateTo: dateTo.value,
+      provider: provider.value,
+      quickModel: quickModel.value,
+      deepModel: deepModel.value,
+      depth: i,
+      force: force.value
+    })
+  }
+  successMessage.value = 'Created depth sweep (1-5) in queue.'
+}
+
 async function handleDeleteSchedule(id: string) {
   if (!confirm('Are you sure you want to delete this schedule?')) return
   try {
@@ -265,177 +384,248 @@ function formatDate(dateStr: string | null): string {
           <span class="font-black text-xs uppercase tracking-[0.2em]" :class="isRunning ? 'text-[var(--color-signal-buy)]' : 'text-blue-400'">
             {{ isRunning ? 'SYSTEM ACTIVE' : 'SYSTEM STATUS' }}
           </span>
-          <span v-if="isRunning" class="text-[10px] font-mono opacity-50">REAL-TIME TRACKING</span>
+          <span v-if="isRunning" class="text-[10px] font-mono opacity-50">RESEARCH RUN IN PROGRESS</span>
         </div>
         <div class="text-white font-bold text-lg mb-1">{{ successMessage }}</div>
-        <div v-if="isRunning" class="text-white text-sm font-semibold opacity-80 bg-black bg-opacity-20 px-3 py-1 rounded-md inline-block">
-          {{ currentJobParams }}
+        
+        <div v-if="isRunning" class="flex flex-wrap gap-2 mt-2">
+          <div class="text-white text-[10px] font-black opacity-80 bg-black bg-opacity-30 px-3 py-1.5 rounded-md flex items-center gap-2">
+            <span class="opacity-40">TARGET</span>
+            {{ currentJobParams }}
+          </div>
+          <div v-if="activeConfig" class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
+            <span class="opacity-40 text-white">MODEL</span>
+            {{ activeConfig.deep_model }}
+          </div>
+          <div v-if="activeConfig" class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
+            <span class="opacity-40 text-white">DEBATE DEPTH</span>
+            {{ activeConfig.debate_depth }}
+          </div>
         </div>
       </div>
       
-      <CheckCircle v-if="isRunning" :size="24" class="opacity-10 z-10" />
+      <div v-if="isQueueRunning" class="z-10 px-4 py-2 bg-black/40 rounded-lg border border-white/10 flex flex-col items-center">
+        <span class="text-[8px] font-black opacity-40 uppercase">Queue</span>
+        <span class="text-xs font-black text-[var(--color-accent-primary)]">{{ researchQueue.length }} LEFT</span>
+      </div>
     </div>
 
-    <!-- Configuration Form -->
-    <div class="bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-2xl p-8 shadow-2xl relative overflow-hidden">
-      <!-- Decorative background glow -->
-      <div class="absolute -top-24 -right-24 w-48 h-48 bg-[var(--color-accent-primary)] opacity-5 blur-[100px] rounded-full"></div>
-      
-      <form @submit.prevent="handleSubmit" class="space-y-8 relative z-10">
-        
-        <!-- Tickers -->
-        <div class="space-y-3">
-          <label class="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
-            <Play :size="16" class="text-[var(--color-accent-primary)]" />
-            Target Tickers
-          </label>
-          <input 
-            v-model="tickersInput"
-            type="text" 
-            placeholder="e.g. AAPL, MSFT, TSLA" 
-            class="w-full px-6 py-4 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] focus:ring-2 focus:ring-[var(--color-accent-primary)]/20 transition-all text-xl font-mono"
-            required
-            :disabled="isRunning"
-          />
-          <p class="text-xs text-[var(--color-text-muted)] italic">Enter stock symbols separated by commas. These will be saved for your next session.</p>
-        </div>
-
-        <!-- Models -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div class="space-y-3">
-            <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Provider</label>
-            <select v-model="provider" :disabled="isRunning" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] transition-all">
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="google">Google</option>
-              <option value="ollama">Ollama</option>
-            </select>
-          </div>
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+      <!-- Left Column: Config -->
+      <div class="lg:col-span-7 space-y-8">
+        <!-- Configuration Form -->
+        <div class="bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-2xl p-8 shadow-2xl relative overflow-hidden h-full">
+          <!-- Decorative background glow -->
+          <div class="absolute -top-24 -right-24 w-48 h-48 bg-[var(--color-accent-primary)] opacity-5 blur-[100px] rounded-full"></div>
           
-          <div class="space-y-3">
-            <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Quick Model</label>
-            <div v-if="provider === 'ollama'" class="relative">
-              <select v-model="quickModel" :disabled="isRunning" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] appearance-none transition-all">
-                <option v-for="m in ollamaModels" :key="m" :value="m">{{ m }}</option>
-                <option v-if="ollamaModels.length === 0" disabled>No models found</option>
-              </select>
-              <div v-if="fetchingModels" class="absolute right-3 top-3">
-                <RefreshCw :size="18" class="animate-spin text-[var(--color-text-muted)]" />
-              </div>
-            </div>
-            <input v-else v-model="quickModel" :disabled="isRunning" type="text" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
-          </div>
-
-          <div class="space-y-3">
-            <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Deep Model</label>
-            <div v-if="provider === 'ollama'" class="relative">
-              <select v-model="deepModel" :disabled="isRunning" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] appearance-none transition-all">
-                <option v-for="m in ollamaModels" :key="m" :value="m">{{ m }}</option>
-                <option v-if="ollamaModels.length === 0" disabled>No models found</option>
-              </select>
-              <div v-if="fetchingModels" class="absolute right-3 top-3">
-                <RefreshCw :size="18" class="animate-spin text-[var(--color-text-muted)]" />
-              </div>
-            </div>
-            <input v-else v-model="deepModel" :disabled="isRunning" type="text" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
-          </div>
-        </div>
-
-        <!-- Advanced Options -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-10 pt-6 border-t border-[var(--color-border-default)]">
-          <div v-if="executionType === 'now'" class="space-y-4">
-            <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Analysis Timeframe</label>
-            <div class="grid grid-cols-2 gap-4">
-              <div class="space-y-2">
-                <span class="text-[10px] uppercase font-black opacity-40">Start Date</span>
-                <input v-model="dateFrom" @blur="dateFrom = padDate(dateFrom)" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
-              </div>
-              <div class="space-y-2">
-                <span class="text-[10px] uppercase font-black opacity-40">End Date</span>
-                <input v-model="dateTo" @blur="dateTo = padDate(dateTo)" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
-              </div>
-            </div>
-          </div>
-
-          <div class="grid grid-cols-2 gap-6">
+          <form @submit.prevent="handleSubmit" class="space-y-8 relative z-10">
+            
+            <!-- Tickers -->
             <div class="space-y-3">
-              <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Debate Depth</label>
-              <div class="flex items-center gap-4">
-                <input v-model.number="depth" :disabled="isRunning" type="range" min="1" max="5" class="flex-1 accent-[var(--color-accent-primary)]" />
-                <span class="w-8 h-8 flex items-center justify-center bg-[var(--color-bg-elevated)] rounded-lg font-bold border border-[var(--color-border-default)]">{{ depth }}</span>
-              </div>
-            </div>
-            <div class="flex flex-col justify-end pb-1">
-              <label class="flex items-center gap-3 cursor-pointer select-none group">
-                <div class="relative w-12 h-6 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-full transition-all group-hover:border-[var(--color-accent-primary)]/50">
-                  <input v-model="force" :disabled="isRunning" type="checkbox" class="sr-only peer" />
-                  <div class="absolute top-1 left-1 w-4 h-4 bg-[var(--color-text-muted)] rounded-full transition-all peer-checked:left-7 peer-checked:bg-[var(--color-accent-primary)]"></div>
-                </div>
-                <span class="text-sm font-bold text-[var(--color-text-secondary)] group-hover:text-[var(--color-text-primary)] transition-colors">Force Re-run</span>
+              <label class="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
+                <Play :size="16" class="text-[var(--color-accent-primary)]" />
+                Target Tickers
               </label>
+              <input 
+                v-model="tickersInput"
+                type="text" 
+                placeholder="e.g. AAPL, MSFT, TSLA" 
+                class="w-full px-6 py-4 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] focus:ring-2 focus:ring-[var(--color-accent-primary)]/20 transition-all text-xl font-mono"
+                required
+                :disabled="isRunning"
+              />
+            </div>
+
+            <!-- Models -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div class="space-y-3">
+                <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Provider</label>
+                <select v-model="provider" :disabled="isRunning" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] transition-all">
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="google">Google</option>
+                  <option value="ollama">Ollama</option>
+                </select>
+              </div>
+              
+              <div class="space-y-3">
+                <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Quick Model</label>
+                <div v-if="provider === 'ollama'" class="relative">
+                  <select v-model="quickModel" :disabled="isRunning" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] appearance-none transition-all">
+                    <option v-for="m in ollamaModels" :key="m" :value="m">{{ m }}</option>
+                    <option v-if="ollamaModels.length === 0" disabled>No models found</option>
+                  </select>
+                  <div v-if="fetchingModels" class="absolute right-3 top-3">
+                    <RefreshCw :size="18" class="animate-spin text-[var(--color-text-muted)]" />
+                  </div>
+                </div>
+                <input v-else v-model="quickModel" :disabled="isRunning" type="text" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+              </div>
+
+              <div class="space-y-3">
+                <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Deep Model</label>
+                <div v-if="provider === 'ollama'" class="relative">
+                  <select v-model="deepModel" :disabled="isRunning" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] appearance-none transition-all">
+                    <option v-for="m in ollamaModels" :key="m" :value="m">{{ m }}</option>
+                    <option v-if="ollamaModels.length === 0" disabled>No models found</option>
+                  </select>
+                  <div v-if="fetchingModels" class="absolute right-3 top-3">
+                    <RefreshCw :size="18" class="animate-spin text-[var(--color-text-muted)]" />
+                  </div>
+                </div>
+                <input v-else v-model="deepModel" :disabled="isRunning" type="text" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+              </div>
+            </div>
+
+            <!-- Advanced Options -->
+            <div class="flex flex-col gap-10 pt-6 border-t border-[var(--color-border-default)]">
+              <div v-if="executionType === 'now'" class="space-y-4">
+                <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Analysis Timeframe</label>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div class="space-y-2">
+                    <span class="text-[10px] uppercase font-black opacity-40">Start Date</span>
+                    <input v-model="dateFrom" @blur="dateFrom = padDate(dateFrom)" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+                  </div>
+                  <div class="space-y-2">
+                    <span class="text-[10px] uppercase font-black opacity-40">End Date</span>
+                    <input v-model="dateTo" @blur="dateTo = padDate(dateTo)" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+                  </div>
+                </div>
+              </div>
+
+              <div class="space-y-3">
+                <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Debate Depth</label>
+                <div class="flex items-center gap-6">
+                  <input v-model.number="depth" :disabled="isRunning" type="range" min="1" max="5" class="flex-1 accent-[var(--color-accent-primary)]" />
+                  <span class="w-10 h-10 flex items-center justify-center bg-[var(--color-bg-elevated)] rounded-lg font-bold border border-[var(--color-border-default)] text-lg">{{ depth }}</span>
+                </div>
+                <p class="text-[10px] text-[var(--color-text-muted)] italic">Higher depth increases reasoning rounds between Bull and Bear agents.</p>
+              </div>
+            </div>
+
+            <!-- Execution Type -->
+            <div class="pt-6 border-t border-[var(--color-border-default)]">
+              <div class="flex flex-col md:flex-row justify-between gap-4">
+                <div class="space-y-4">
+                  <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-4 block">Execution Strategy</label>
+                  <div class="flex gap-8">
+                    <label class="flex items-center gap-3 cursor-pointer group">
+                      <input type="radio" v-model="executionType" value="now" :disabled="isRunning" class="w-5 h-5 accent-[var(--color-accent-primary)]" />
+                      <div class="flex flex-col">
+                        <span class="text-sm font-bold group-hover:text-[var(--color-accent-primary)] transition-colors">Run Once</span>
+                      </div>
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer group">
+                      <input type="radio" v-model="executionType" value="schedule" :disabled="isRunning" class="w-5 h-5 accent-[var(--color-accent-primary)]" />
+                      <div class="flex flex-col">
+                        <span class="text-sm font-bold group-hover:text-[var(--color-accent-primary)] transition-colors">Schedule Recurring</span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+                
+                <div v-if="executionType === 'schedule'" class="animate-in fade-in slide-in-from-top-2">
+                  <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-3 block">Interval</label>
+                  <select v-model="intervalMinutes" :disabled="isRunning" class="w-full md:w-48 px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]">
+                    <option :value="60">Hourly</option>
+                    <option :value="1440">Daily</option>
+                    <option :value="10080">Weekly</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="pt-8 border-t border-[var(--color-border-default)] flex flex-wrap gap-4">
+              <button
+                v-if="!isRunning"
+                type="submit"
+                :disabled="loading"
+                class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
+              >
+                <RefreshCw v-if="loading" :size="20" class="animate-spin" />
+                <template v-else-if="executionType === 'now'">
+                  <Play :size="20" /> Start Now
+                </template>
+                <template v-else>
+                  <Clock :size="20" /> Save Schedule
+                </template>
+              </button>
+
+              <button
+                v-if="!isRunning && executionType === 'now'"
+                type="button"
+                @click="addToQueue"
+                class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-bg-elevated)] hover:bg-opacity-80 border border-[var(--color-border-default)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+              >
+                Add to Queue
+              </button>
+
+              <button
+                v-if="isRunning"
+                type="button"
+                @click="handleStop"
+                :disabled="isStopping"
+                class="flex items-center justify-center gap-3 px-12 py-4 bg-[var(--color-signal-sell)] hover:bg-red-600 text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-70 shadow-xl shadow-red-500/40"
+              >
+                <RefreshCw v-if="isStopping" :size="20" class="animate-spin" />
+                <Square v-else :size="20" /> Stop Current
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Right Column: Research Queue -->
+      <div class="lg:col-span-5 space-y-6">
+        <div class="bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-2xl p-6 shadow-2xl relative overflow-hidden flex flex-col h-full min-h-[600px]">
+          <div class="flex items-center justify-between mb-6">
+            <h2 class="text-xl font-bold flex items-center gap-3">
+              <RefreshCw :size="20" class="text-[var(--color-accent-primary)]" :class="{ 'animate-spin': isQueueRunning }" />
+              Research Queue
+            </h2>
+            <div class="flex gap-2">
+              <button @click="sweepDepth" :disabled="isRunning || !tickersInput" class="px-2 py-1 bg-black/40 text-[9px] font-black uppercase rounded border border-white/10 hover:bg-black/60 transition-colors">Sweep Depth</button>
+              <button v-if="researchQueue.length > 0" @click="researchQueue = []" class="px-2 py-1 text-[9px] font-black uppercase text-[var(--color-signal-sell)] hover:bg-[var(--color-signal-sell)]/10 rounded transition-colors">Clear</button>
             </div>
           </div>
-        </div>
 
-        <!-- Execution Type -->
-        <div class="pt-6 border-t border-[var(--color-border-default)]">
-          <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-4 block">Execution Strategy</label>
-          <div class="flex gap-8">
-            <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="radio" v-model="executionType" value="now" :disabled="isRunning" class="w-5 h-5 accent-[var(--color-accent-primary)]" />
-              <div class="flex flex-col">
-                <span class="text-sm font-bold group-hover:text-[var(--color-accent-primary)] transition-colors">Run Once Now</span>
-                <span class="text-[10px] opacity-40">Immediate execution</span>
+          <div v-if="researchQueue.length === 0" class="flex-1 flex flex-col items-center justify-center text-center p-8 border-2 border-dashed border-[var(--color-border-default)] rounded-xl opacity-40">
+            <Clock :size="48" class="mb-4" />
+            <p class="text-sm font-bold uppercase tracking-widest">Queue is Empty</p>
+            <p class="text-xs mt-2 italic">Add runs with different criteria to test input effects on alpha.</p>
+          </div>
+
+          <div v-else class="flex-1 space-y-3 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar">
+            <div v-for="(job, index) in researchQueue" :key="job.id" class="p-4 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl group relative hover:border-[var(--color-accent-primary)]/50 transition-all">
+              <div class="flex justify-between items-start">
+                <div class="space-y-1">
+                  <div class="flex gap-1">
+                    <span v-for="t in job.tickers" :key="t" class="text-[10px] font-black text-[var(--color-accent-primary)]">{{ t }}</span>
+                  </div>
+                  <div class="text-[10px] opacity-60 font-mono">{{ job.dateFrom || 'Today' }} → {{ job.dateTo || 'Today' }}</div>
+                </div>
+                <button @click="removeFromQueue(index)" class="opacity-0 group-hover:opacity-100 p-1 hover:text-[var(--color-signal-sell)] transition-all">
+                  <Trash2 :size="14" />
+                </button>
               </div>
-            </label>
-            <label class="flex items-center gap-3 cursor-pointer group">
-              <input type="radio" v-model="executionType" value="schedule" :disabled="isRunning" class="w-5 h-5 accent-[var(--color-accent-primary)]" />
-              <div class="flex flex-col">
-                <span class="text-sm font-bold group-hover:text-[var(--color-accent-primary)] transition-colors">Schedule Recurring</span>
-                <span class="text-[10px] opacity-40">Automate future runs</span>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <span class="px-2 py-0.5 bg-black/40 text-[8px] font-black rounded border border-white/5">{{ job.quickModel }}</span>
+                <span class="px-2 py-0.5 bg-black/40 text-[8px] font-black rounded border border-white/5">DEPTH {{ job.depth }}</span>
               </div>
-            </label>
+            </div>
+          </div>
+
+          <div class="mt-6">
+            <button
+              @click="runQueue"
+              :disabled="isRunning || researchQueue.length === 0"
+              class="w-full py-4 bg-white text-black font-black uppercase tracking-widest rounded-xl hover:bg-opacity-90 disabled:opacity-30 transition-all flex items-center justify-center gap-3"
+            >
+              <Play :size="20" /> Run Research Stack
+            </button>
           </div>
         </div>
-
-        <!-- Interval (if schedule) -->
-        <div v-if="executionType === 'schedule'" class="animate-in fade-in slide-in-from-top-2">
-          <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-3 block">Recurrence Interval</label>
-          <select v-model="intervalMinutes" :disabled="isRunning" class="w-full md:w-64 px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]">
-            <option :value="60">Every Hour</option>
-            <option :value="1440">Daily (24 hours)</option>
-            <option :value="10080">Weekly (7 days)</option>
-          </select>
-        </div>
-
-        <div class="pt-8 border-t border-[var(--color-border-default)] flex gap-6">
-          <button
-            v-if="!isRunning"
-            type="submit"
-            :disabled="loading"
-            class="flex items-center justify-center gap-3 flex-1 md:flex-none px-12 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-2xl shadow-[var(--color-accent-primary)]/40"
-          >
-            <RefreshCw v-if="loading" :size="20" class="animate-spin" />
-            <template v-else-if="executionType === 'now'">
-              <Play :size="20" /> Start Analysis
-            </template>
-            <template v-else>
-              <Clock :size="20" /> Save Schedule
-            </template>
-          </button>
-
-          <button
-            v-else
-            type="button"
-            @click="handleStop"
-            :disabled="isStopping"
-            class="flex items-center justify-center gap-3 flex-1 md:flex-none px-12 py-4 bg-[var(--color-signal-sell)] hover:bg-red-600 text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-70 shadow-2xl shadow-red-500/40"
-          >
-            <RefreshCw v-if="isStopping" :size="20" class="animate-spin" />
-            <Square v-else :size="20" /> {{ isStopping ? 'Stopping...' : 'Stop Analysis' }}
-          </button>
-        </div>
-      </form>
+      </div>
     </div>
 
     <!-- Active Schedules Table -->

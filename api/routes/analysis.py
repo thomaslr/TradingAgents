@@ -22,13 +22,19 @@ class AnalysisTaskState:
         self.abort_event = threading.Event()
         self.lock = threading.Lock()
 
-    def start_job(self, tickers: List[str], dates: List[str]):
+    def start_job(self, tickers: List[str], dates: List[str], config: dict):
         with self.lock:
             self.abort_event.clear()
             self.active_job = {
                 "tickers": tickers,
                 "dates": dates,
-                "started_at": datetime.now().isoformat()
+                "started_at": datetime.now().isoformat(),
+                "config": {
+                    "provider": config.get("llm_provider"),
+                    "quick_model": config.get("quick_think_llm"),
+                    "deep_model": config.get("deep_think_llm"),
+                    "debate_depth": config.get("max_debate_rounds")
+                }
             }
 
     def stop_job(self):
@@ -81,9 +87,8 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
                 pass
                 
         logger.info(f"Starting background analysis for {request.tickers} on {expanded_dates}")
-        print(f"DEBUG: Tickers: {request.tickers}, Dates: {expanded_dates}, Provider: {config.get('llm_provider')}")
         
-        task_state.start_job(request.tickers, expanded_dates)
+        task_state.start_job(request.tickers, expanded_dates, config)
         
         def progress_cb(ticker: str, date: str):
             with task_state.lock:
@@ -102,16 +107,11 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
             progress_callback=progress_cb
         )
         logger.info(f"Background analysis complete: {summary}")
-        print(f"DEBUG: Analysis complete: {summary}")
     except Exception as e:
         logger.error(f"Background analysis failed: {e}")
-        print(f"DEBUG: Analysis failed: {e}")
-        import traceback
-        traceback.print_exc()
     finally:
         registry.close()
         task_state.clear_job()
-        print("DEBUG: execute_analysis_task finished and job cleared.")
 
 # ── Endpoints ────────────────────────────────────────────────────────
 
