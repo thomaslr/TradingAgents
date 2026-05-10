@@ -124,7 +124,6 @@ async def get_ollama_tags():
         return []
 
 if __name__ == "__main__":
-    # Standard entry point for running directly
-    # Migrated to 7100 to avoid Windows excluded port range
-    uvicorn.run("api.main:app", host="127.0.0.1", port=7100, reload=True)
+    # Migrated to 7101 to avoid stale processes on 7100
+    uvicorn.run("api.main:app", host="127.0.0.1", port=7101, reload=True)
 

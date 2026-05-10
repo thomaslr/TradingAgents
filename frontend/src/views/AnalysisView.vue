@@ -28,6 +28,8 @@ interface QueuedJob {
 const schedules = ref<ScheduleJob[]>([])
 const researchQueue = ref<QueuedJob[]>(JSON.parse(localStorage.getItem('trading_queue') || '[]'))
 const isQueueRunning = ref(localStorage.getItem('trading_queue_running') === 'true')
+const queueTotal = ref(Number(localStorage.getItem('trading_queue_total') || '0'))
+const queueCurrent = ref(Number(localStorage.getItem('trading_queue_current') || '0'))
 const ollamaModels = ref<string[]>([])
 const loading = ref(false)
 const fetchingModels = ref(false)
@@ -37,6 +39,7 @@ const successMessage = ref('')
 const isRunning = ref(false)
 const currentJobParams = ref<string>('')
 const activeConfig = ref<any>(null)
+const isProcessingQueue = ref(false)
 let statusPolling: any = null
 
 // Form State
@@ -66,6 +69,8 @@ watch(force, (v) => localStorage.setItem('trading_force', String(v)))
 watch(depth, (v) => localStorage.setItem('trading_depth', String(v)))
 watch(researchQueue, (v) => localStorage.setItem('trading_queue', JSON.stringify(v)), { deep: true })
 watch(isQueueRunning, (v) => localStorage.setItem('trading_queue_running', String(v)))
+watch(queueTotal, (v) => localStorage.setItem('trading_queue_total', String(v)))
+watch(queueCurrent, (v) => localStorage.setItem('trading_queue_current', String(v)))
 
 onMounted(async () => {
   await loadDefaultConfig()
@@ -83,7 +88,9 @@ async function checkStatus() {
   try {
     const status = await fetchAnalysisStatus()
     isRunning.value = status.running
+    
     if (status.running && status.job) {
+      isProcessingQueue.value = false // We've confirmed it's running
       activeConfig.value = status.job.config
       const tickers = status.job.tickers.join(', ')
       const current = status.job.current_ticker 
@@ -94,20 +101,49 @@ async function checkStatus() {
       successMessage.value = `Analysis in progress...`
     } else {
       activeConfig.value = null
-      if (isRunning.value === false && isStopping.value === true) {
-        isStopping.value = false
-        successMessage.value = 'Analysis stopped.'
-        isQueueRunning.value = false // Stop queue if manually stopped
-      }
       
-      // Auto-advance queue if active
-      if (!status.running && isQueueRunning.value && researchQueue.value.length > 0) {
-        runNextInQueue()
-      } else if (!status.running && isQueueRunning.value && researchQueue.value.length === 0) {
-        isQueueRunning.value = false
-        successMessage.value = 'Research Stack Complete.'
-      } else if (!status.running && successMessage.value.includes('in progress')) {
-        successMessage.value = 'Analysis complete.'
+      if (!status.running) {
+        // Safety watchdog: if we're "launching" but backend is idle, 
+        // give it a few polls then error out.
+        if (isProcessingQueue.value) {
+          if (!window._launchWatchdog) window._launchWatchdog = 0
+          window._launchWatchdog++
+          if (window._launchWatchdog > 4) { // ~12 seconds
+            error.value = status.last_error ? `Launch Failed: ${status.last_error}` : 'Launch Timeout: The backend did not start the job.'
+            isProcessingQueue.value = false
+            isQueueRunning.value = false
+            window._launchWatchdog = 0
+          }
+        } else {
+          window._launchWatchdog = 0
+        }
+
+        if (status.last_error && isProcessingQueue.value) {
+           error.value = `Launch Failed: ${status.last_error}`
+           isProcessingQueue.value = false
+           isQueueRunning.value = false
+        }
+        
+        if (isStopping.value === true) {
+          isStopping.value = false
+          successMessage.value = 'Analysis stopped.'
+          isQueueRunning.value = false
+        }
+        
+        // Auto-advance logic
+        if (isQueueRunning.value && !isProcessingQueue.value) {
+          if (researchQueue.value.length > 0) {
+            queueCurrent.value++
+            runNextInQueue()
+          } else {
+            isQueueRunning.value = false
+            queueTotal.value = 0
+            queueCurrent.value = 0
+            successMessage.value = 'Research Stack Complete.'
+          }
+        } else if (successMessage.value.includes('in progress')) {
+          successMessage.value = 'Analysis complete.'
+        }
       }
     }
   } catch (e) {
@@ -257,6 +293,8 @@ function removeFromQueue(index: number) {
 async function runQueue() {
   if (researchQueue.value.length === 0) return
   isQueueRunning.value = true
+  queueTotal.value = researchQueue.value.length
+  queueCurrent.value = 1
   await runNextInQueue()
 }
 
@@ -267,6 +305,7 @@ async function runNextInQueue() {
   }
   
   const job = researchQueue.value[0]
+  isProcessingQueue.value = true
   loading.value = true
   
   try {
@@ -288,12 +327,13 @@ async function runNextInQueue() {
       max_debate_rounds: job.depth
     })
     
-    // Remove from queue AFTER starting successfully
+    // Remove from queue ONLY after successful API call
     researchQueue.value.shift()
-    isRunning.value = true
+    successMessage.value = `Launching Job ${queueCurrent.value}: ${job.tickers.join(', ')}...`
   } catch (e: any) {
     error.value = `Queue Error: ${e.message}`
     isQueueRunning.value = false
+    isProcessingQueue.value = false
   } finally {
     loading.value = false
   }
@@ -369,37 +409,47 @@ function formatDate(dateStr: string | null): string {
     <!-- Enhanced Status Bar -->
     <div v-if="successMessage" 
       class="relative overflow-hidden flex items-center gap-4 p-5 rounded-xl border border-opacity-20 transition-all duration-500 shadow-2xl"
-      :class="isRunning ? 'bg-[var(--color-signal-buy)] bg-opacity-5 border-[var(--color-signal-buy)]' : 'bg-blue-500 bg-opacity-5 border-blue-500'"
+      :class="(isRunning || isQueueRunning) ? 'bg-[var(--color-signal-buy)] bg-opacity-5 border-[var(--color-signal-buy)]' : 'bg-blue-500 bg-opacity-5 border-blue-500'"
     >
       <!-- Animated Scanning Overlay -->
-      <div v-if="isRunning" class="absolute inset-0 bg-gradient-to-r from-transparent via-[var(--color-signal-buy)] to-transparent opacity-5 scan-anim"></div>
+      <div v-if="isRunning || isQueueRunning" class="absolute inset-0 bg-gradient-to-r from-transparent via-[var(--color-signal-buy)] to-transparent opacity-5 scan-anim"></div>
       
-      <div class="z-10 flex items-center justify-center w-12 h-12 rounded-full bg-opacity-10" :class="isRunning ? 'bg-[var(--color-signal-buy)] text-[var(--color-signal-buy)]' : 'bg-blue-500 text-blue-400'">
-        <RefreshCw v-if="isRunning" :size="24" class="animate-spin" />
+      <div class="z-10 flex items-center justify-center w-12 h-12 rounded-full bg-opacity-10" :class="(isRunning || isQueueRunning) ? 'bg-[var(--color-signal-buy)] text-[var(--color-signal-buy)]' : 'bg-blue-500 text-blue-400'">
+        <RefreshCw v-if="isRunning || isQueueRunning" :size="24" class="animate-spin" />
         <CheckCircle v-else :size="24" />
       </div>
 
       <div class="flex-1 z-10">
         <div class="flex items-center justify-between mb-1">
-          <span class="font-black text-xs uppercase tracking-[0.2em]" :class="isRunning ? 'text-[var(--color-signal-buy)]' : 'text-blue-400'">
-            {{ isRunning ? 'SYSTEM ACTIVE' : 'SYSTEM STATUS' }}
+          <span class="font-black text-xs uppercase tracking-[0.2em]" :class="(isRunning || isQueueRunning) ? 'text-[var(--color-signal-buy)]' : 'text-blue-400'">
+            {{ (isRunning || isQueueRunning) ? 'SYSTEM ACTIVE' : 'SYSTEM STATUS' }}
           </span>
-          <span v-if="isRunning" class="text-[10px] font-mono opacity-50">RESEARCH RUN IN PROGRESS</span>
+          <span v-if="isRunning || isQueueRunning" class="text-[10px] font-mono opacity-50">RESEARCH RUN IN PROGRESS</span>
         </div>
         <div class="text-white font-bold text-lg mb-1">{{ successMessage }}</div>
         
         <div v-if="isRunning" class="flex flex-wrap gap-2 mt-2">
+          <div v-if="isQueueRunning && queueTotal > 0" class="text-white text-[10px] font-black opacity-80 bg-white/20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/20">
+            <span class="opacity-40">STACK PROGRESS</span>
+            Job {{ queueCurrent }} of {{ queueTotal }}
+          </div>
           <div class="text-white text-[10px] font-black opacity-80 bg-black bg-opacity-30 px-3 py-1.5 rounded-md flex items-center gap-2">
             <span class="opacity-40">TARGET</span>
             {{ currentJobParams }}
           </div>
-          <div v-if="activeConfig" class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
-            <span class="opacity-40 text-white">MODEL</span>
-            {{ activeConfig.deep_model }}
+          
+          <!-- Metadata Pills (Fallback to form state if backend hasn't reported yet) -->
+          <div class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
+            <span class="opacity-40 text-white">ANALYST</span>
+            {{ activeConfig?.quick_model || quickModel }}
           </div>
-          <div v-if="activeConfig" class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
+          <div class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
+            <span class="opacity-40 text-white">JUDGE</span>
+            {{ activeConfig?.deep_model || deepModel }}
+          </div>
+          <div class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
             <span class="opacity-40 text-white">DEBATE DEPTH</span>
-            {{ activeConfig.debate_depth }}
+            {{ activeConfig?.debate_depth || depth }}
           </div>
         </div>
       </div>

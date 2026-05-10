@@ -3,7 +3,10 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
 import threading
+import sys
+import os
 from datetime import datetime
+from pathlib import Path
 
 from api.dependencies import get_registry, get_config
 from tradingagents.db.registry import RunRegistry
@@ -19,12 +22,14 @@ class AnalysisTaskState:
     """Manages the lifecycle and cancellation of background analysis jobs."""
     def __init__(self):
         self.active_job: Optional[Dict[str, Any]] = None
+        self.last_error: Optional[str] = None
         self.abort_event = threading.Event()
         self.lock = threading.Lock()
 
     def start_job(self, tickers: List[str], dates: List[str], config: dict):
         with self.lock:
             self.abort_event.clear()
+            self.last_error = None
             self.active_job = {
                 "tickers": tickers,
                 "dates": dates,
@@ -36,6 +41,11 @@ class AnalysisTaskState:
                     "debate_depth": config.get("max_debate_rounds")
                 }
             }
+
+    def set_error(self, error: str):
+        with self.lock:
+            self.last_error = error
+            self.active_job = None
 
     def stop_job(self):
         with self.lock:
@@ -69,9 +79,19 @@ class AnalysisRequest(BaseModel):
 
 def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
     """Background task to run the analysis."""
-    print(f"DEBUG: execute_analysis_task started for {request.tickers}")
-    registry = RunRegistry(db_path)
+    # Emergency logging to local file
+    log_file = Path("analysis_startup.log")
+    with open(log_file, "a") as f:
+        f.write(f"\n[{datetime.now()}] Starting task for {request.tickers}\n")
+    
     try:
+        # Ensure root is in path
+        root_dir = str(Path(__file__).parent.parent.parent)
+        if root_dir not in sys.path:
+            sys.path.append(root_dir)
+            
+        print(f"DEBUG: execute_analysis_task started for {request.tickers}")
+        registry = RunRegistry(db_path)
         # Apply overrides from request to config
         if request.llm_provider: config["llm_provider"] = request.llm_provider
         if request.quick_think_llm: config["quick_think_llm"] = request.quick_think_llm
@@ -108,7 +128,12 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
         )
         logger.info(f"Background analysis complete: {summary}")
     except Exception as e:
-        logger.error(f"Background analysis failed: {e}")
+        import traceback
+        err_msg = f"Analysis Failed: {str(e)}\n{traceback.format_exc()}"
+        logger.error(err_msg)
+        with open(log_file, "a") as f:
+            f.write(f"CRASH: {err_msg}\n")
+        task_state.set_error(str(e))
     finally:
         registry.close()
         task_state.clear_job()
@@ -126,6 +151,9 @@ def start_batch_analysis(
     if task_state.is_running():
         raise HTTPException(status_code=400, detail="An analysis job is already running.")
     
+    # Immediately mark as running to prevent frontend race conditions
+    task_state.start_job(request.tickers, request.dates, config)
+    
     background_tasks.add_task(execute_analysis_task, request, config, registry.db_path)
     
     return {
@@ -140,7 +168,8 @@ def get_analysis_status():
     """Check if an analysis job is currently running."""
     return {
         "running": task_state.is_running(),
-        "job": task_state.active_job
+        "job": task_state.active_job,
+        "last_error": task_state.last_error
     }
 
 @router.post("/stop")
