@@ -1,49 +1,51 @@
 from fastapi import APIRouter, HTTPException, Query
 import yfinance as yf
+import pandas as pd
 from typing import List, Dict, Any, Optional
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
 @router.get("/ohlc/{ticker}")
 def get_ohlc_data(
     ticker: str,
-    period: Optional[str] = Query("1y", description="Time period (e.g., 1mo, 6mo, 1y, 5y)"),
+    period: Optional[str] = Query(None, description="Time period (e.g., 1mo, 6mo, 1y, 5y)"),
     start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
     end: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     interval: str = Query("1d", description="Time interval (e.g., 1d, 1wk)")
 ):
     """Fetch OHLC data for lightweight charts."""
     try:
-        if start and end:
-            data = yf.download(ticker, start=start, end=end, interval=interval, progress=False)
+        # Normalize inputs
+        start_str = start.strip() if start and start.strip() else None
+        end_str = end.strip() if end and end.strip() else None
+        period_val = period if period else "1y"
+
+        logger.info(f"OHLC Request: {ticker} | Start: {start_str} | End: {end_str} | Period: {period_val}")
+
+        if start_str and end_str:
+            data = yf.download(ticker, start=start_str, end=end_str, interval=interval, progress=False)
         else:
-            data = yf.download(ticker, period=period, interval=interval, progress=False)
+            data = yf.download(ticker, period=period_val, interval=interval, progress=False)
+
         if data.empty:
+            logger.warning(f"No OHLC data found for {ticker} with current params")
             raise HTTPException(status_code=404, detail=f"No data found for {ticker}")
             
-        # Format data for Lightweight Charts: 
-        # Expected format: [{ time: '2019-04-11', open: 141.77, high: 142.15, low: 138.81, close: 140.41 }]
-        # Also include volume: [{ time: '2019-04-11', value: 123456 }]
-        
-        # If single ticker, columns are 'Open', 'High', 'Low', 'Close', 'Volume'
-        # If multi-ticker (shouldn't happen here, but handle just in case), columns are MultiIndex
+        # Format data for Lightweight Charts
         if isinstance(data.columns, pd.MultiIndex):
-            # Just take the first ticker if it returned a multi-index unexpectedly
             ticker_data = data.xs(ticker, level=1, axis=1) if ticker in data.columns.levels[1] else data
         else:
             ticker_data = data
             
-        # Reset index to get Date as a column
         df = ticker_data.reset_index()
-        
-        # Determine date column name (usually 'Date' or 'Datetime')
         date_col = 'Date' if 'Date' in df.columns else 'Datetime' if 'Datetime' in df.columns else df.columns[0]
         
         candles = []
         volumes = []
         
         for _, row in df.iterrows():
-            # Format time as YYYY-MM-DD for daily data, or unix timestamp for intraday
             time_val = row[date_col].strftime('%Y-%m-%d') if interval.endswith('d') or interval.endswith('wk') or interval.endswith('mo') else int(row[date_col].timestamp())
             
             candles.append({
@@ -61,12 +63,13 @@ def get_ohlc_data(
             
         return {
             "ticker": ticker,
-            "period": period,
+            "period": period_val,
             "interval": interval,
             "candles": candles,
             "volumes": volumes
         }
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.exception(f"Unexpected error fetching OHLC for {ticker}")
         raise HTTPException(status_code=500, detail=str(e))
-
-import pandas as pd # Needed for isinstance check

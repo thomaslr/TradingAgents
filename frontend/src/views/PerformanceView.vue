@@ -11,21 +11,32 @@ const chartContainer = ref<HTMLDivElement>()
 // Filters
 const showCosts = ref(false)
 const commissionPerTrade = ref(0.001) // 0.1% default simulation cost
-const selectedTicker = ref('ALL')
-const benchmarkType = ref<'SPY' | 'ASSET'>('ASSET') // Default to Buy & Hold comparison
-const strategySource = ref<'RATING' | 'ACTION'>('RATING') // Expert Signal vs Final Action
+const selectedTicker = ref(localStorage.getItem('perf_ticker') || 'ALL')
+const benchmarkType = ref<'SPY' | 'ASSET'>((localStorage.getItem('perf_benchmark') as any) || 'ASSET')
+const strategySource = ref<'RATING' | 'ACTION'>((localStorage.getItem('perf_source') as any) || 'RATING')
 const costModel = ref<'FLAT' | 'IBKR'>('FLAT')
-const timeRange = ref<'1M' | '3M' | '6M' | 'YTD' | 'ALL' | 'CUSTOM'>('6M')
-const dateFrom = ref('')
-const dateTo = ref('')
+const timeRange = ref<'1M' | '3M' | '6M' | 'YTD' | 'ALL' | 'CUSTOM'>((localStorage.getItem('perf_range') as any) || '6M')
+const dateFrom = ref(localStorage.getItem('perf_from') || '')
+const dateTo = ref(localStorage.getItem('perf_to') || '')
 
 // Visible Chart Range (for dynamic stats)
 const visibleTimeRange = ref<{ from: string; to: string } | null>(null)
 
 // Research Mode Filters
-const selectedQuickModel = ref('ALL')
-const selectedDeepModel = ref('ALL')
-const selectedDepth = ref('ALL')
+const selectedQuickModel = ref(localStorage.getItem('perf_quick_model') || 'ALL')
+const selectedDeepModel = ref(localStorage.getItem('perf_deep_model') || 'ALL')
+const selectedDepth = ref(localStorage.getItem('perf_depth') || 'ALL')
+
+// Persist Filters
+watch(selectedTicker, (v) => localStorage.setItem('perf_ticker', v))
+watch(benchmarkType, (v) => localStorage.setItem('perf_benchmark', v))
+watch(strategySource, (v) => localStorage.setItem('perf_source', v))
+watch(timeRange, (v) => localStorage.setItem('perf_range', v))
+watch(dateFrom, (v) => localStorage.setItem('perf_from', v))
+watch(dateTo, (v) => localStorage.setItem('perf_to', v))
+watch(selectedQuickModel, (v) => localStorage.setItem('perf_quick_model', v))
+watch(selectedDeepModel, (v) => localStorage.setItem('perf_deep_model', v))
+watch(selectedDepth, (v) => localStorage.setItem('perf_depth', v))
 
 const expandedRows = ref<Set<string>>(new Set())
 const expandedReports = ref<Record<string, any>>({})
@@ -125,6 +136,21 @@ const filteredEntries = computed(() => {
   
   return result
 })
+
+function padDate(val: string): string {
+  if (!val) return val
+  const parts = val.split('-').map(p => p.trim())
+  if (parts.length === 3) {
+    let [y, m, d] = parts
+    if (y.length === 2) y = '20' + y
+    if (m.length === 1) m = '0' + m
+    if (d.length === 1) d = '0' + d
+    if (y.length === 4 && m.length === 2 && d.length === 2) {
+      return `${y}-${m}-${d}`
+    }
+  }
+  return val
+}
 
 const visibleEntries = computed(() => {
   if (!visibleTimeRange.value) return filteredEntries.value
@@ -457,11 +483,11 @@ function getSignalLabel(text: string) {
           <div class="flex items-center gap-3 px-2">
             <div class="flex flex-col gap-0.5">
               <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">Start Date</span>
-              <input v-model="dateFrom" @input="timeRange = 'CUSTOM'" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
+              <input v-model="dateFrom" @input="timeRange = 'CUSTOM'" @blur="dateFrom = padDate(dateFrom)" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
             </div>
             <div class="flex flex-col gap-0.5">
               <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">End Date</span>
-              <input v-model="dateTo" @input="timeRange = 'CUSTOM'" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
+              <input v-model="dateTo" @input="timeRange = 'CUSTOM'" @blur="dateTo = padDate(dateTo)" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
             </div>
           </div>
         </div>

@@ -15,15 +15,23 @@ let volumeSeries: ISeriesApi<'Histogram'> | null = null
 
 const loading = ref(true)
 const error = ref('')
-const period = ref('3mo')
-const dateFrom = ref('')
-const dateTo = ref('')
-const tickerInput = ref(props.ticker || '')
+const period = ref(localStorage.getItem('chart_period') || '3mo')
+const dateFrom = ref(localStorage.getItem('chart_from') || '')
+const dateTo = ref(localStorage.getItem('chart_to') || '')
+const tickerInput = ref(props.ticker || localStorage.getItem('chart_ticker') || '')
 const availableTickers = ref<any[]>([])
 const runs = ref<Run[]>([])
-const showBuy = ref(true)
-const showSell = ref(true)
-const showHold = ref(false)
+const showBuy = ref(localStorage.getItem('chart_show_buy') !== 'false')
+const showSell = ref(localStorage.getItem('chart_show_sell') !== 'false')
+const showHold = ref(localStorage.getItem('chart_show_hold') === 'true')
+
+watch(period, (v) => localStorage.setItem('chart_period', v))
+watch(dateFrom, (v) => localStorage.setItem('chart_from', v))
+watch(dateTo, (v) => localStorage.setItem('chart_to', v))
+watch(tickerInput, (v) => localStorage.setItem('chart_ticker', v))
+watch(showBuy, (v) => localStorage.setItem('chart_show_buy', String(v)))
+watch(showSell, (v) => localStorage.setItem('chart_show_sell', String(v)))
+watch(showHold, (v) => localStorage.setItem('chart_show_hold', String(v)))
 
 
 const periods = [
@@ -66,14 +74,41 @@ onBeforeUnmount(() => {
   }
 })
 
+function padDate(val: string): string {
+  if (!val) return val
+  const parts = val.split('-').map(p => p.trim())
+  if (parts.length === 3) {
+    let [y, m, d] = parts
+    if (y.length === 2) y = '20' + y
+    if (m.length === 1) m = '0' + m
+    if (d.length === 1) d = '0' + d
+    if (y.length === 4 && m.length === 2 && d.length === 2) {
+      return `${y}-${m}-${d}`
+    }
+  }
+  return val
+}
+
 async function loadChart() {
   if (!chartContainer.value) return
   loading.value = true
   error.value = ''
 
   try {
+    // Use custom dates if both are valid, otherwise use preset period
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/
+    const useDates = dateRegex.test(dateFrom.value) && dateRegex.test(dateTo.value)
+    
+    console.log(`Loading Chart: ${tickerInput.value} | UseDates: ${useDates} (${dateFrom.value} to ${dateTo.value}) | Period: ${period.value}`)
+
     const [ohlc, allRuns] = await Promise.all([
-      fetchOHLC(tickerInput.value, period.value, '1d', dateFrom.value, dateTo.value),
+      fetchOHLC(
+        tickerInput.value, 
+        period.value, 
+        '1d', 
+        useDates ? dateFrom.value : undefined, 
+        useDates ? dateTo.value : undefined
+      ),
       fetchRuns(tickerInput.value),
     ])
 
@@ -199,7 +234,16 @@ function changeTicker() {
   }
 }
 
+// Watchers for automatic updates
 watch([period, showBuy, showSell, showHold], () => loadChart())
+
+// Auto-refresh when dates match the YYYY-MM-DD pattern
+watch([dateFrom, dateTo], ([f, t]) => {
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/
+  if ((!f && !t) || (dateRegex.test(f) && dateRegex.test(t))) {
+    loadChart()
+  }
+})
 
 </script>
 
@@ -254,16 +298,13 @@ watch([period, showBuy, showSell, showHold], () => loadChart())
         <div class="flex items-center gap-4 bg-[var(--color-bg-elevated)] p-2 rounded-xl border border-[var(--color-border-default)]">
           <div class="flex flex-col gap-0.5">
             <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Start Date</span>
-            <input v-model="dateFrom" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-xs font-bold focus:ring-0 w-24 p-0" />
+            <input v-model="dateFrom" @blur="dateFrom = padDate(dateFrom)" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-xs font-bold focus:ring-0 w-24 p-0" />
           </div>
           <div class="w-px h-8 bg-[var(--color-border-default)]"></div>
           <div class="flex flex-col gap-0.5">
             <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">End Date</span>
-            <input v-model="dateTo" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-xs font-bold focus:ring-0 w-24 p-0" />
+            <input v-model="dateTo" @blur="dateTo = padDate(dateTo)" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-xs font-bold focus:ring-0 w-24 p-0" />
           </div>
-          <button @click="loadChart" class="p-2 rounded-lg bg-[var(--color-accent-primary)] text-white hover:bg-[var(--color-accent-hover)] transition-all">
-            <RefreshCw :size="14" />
-          </button>
         </div>
       </div>
     </div>

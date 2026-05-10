@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchRuns, deleteRuns, deleteRun, type Run } from '../api/client'
 import { TrendingUp, TrendingDown, Minus, Clock, CheckCircle, XCircle, Eye, Trash2, RefreshCw, Search, ArrowDown, ArrowUp } from 'lucide-vue-next'
@@ -10,12 +10,33 @@ const loading = ref(true)
 const error = ref('')
 
 // Search, Filter, Sort, Select State
-const searchQuery = ref('')
-const startDate = ref('')
-const endDate = ref('')
-const sortColumn = ref<keyof Run | 'completed_at'>('completed_at')
-const sortDirection = ref<'asc' | 'desc'>('desc')
+const searchQuery = ref(localStorage.getItem('dash_search') || '')
+const startDate = ref(localStorage.getItem('dash_start') || '')
+const endDate = ref(localStorage.getItem('dash_end') || '')
+const sortColumn = ref<keyof Run | 'completed_at'>((localStorage.getItem('dash_sort_col') as any) || 'completed_at')
+const sortDirection = ref<'asc' | 'desc'>((localStorage.getItem('dash_sort_dir') as any) || 'desc')
 const selectedRuns = ref<Set<number>>(new Set())
+
+watch(searchQuery, (v) => localStorage.setItem('dash_search', v))
+watch(startDate, (v) => localStorage.setItem('dash_start', v))
+watch(endDate, (v) => localStorage.setItem('dash_end', v))
+watch(sortColumn, (v) => localStorage.setItem('dash_sort_col', v))
+watch(sortDirection, (v) => localStorage.setItem('dash_sort_dir', v))
+
+function padDate(val: string): string {
+  if (!val) return val
+  const parts = val.split('-').map(p => p.trim())
+  if (parts.length === 3) {
+    let [y, m, d] = parts
+    if (y.length === 2) y = '20' + y
+    if (m.length === 1) m = '0' + m
+    if (d.length === 1) d = '0' + d
+    if (y.length === 4 && m.length === 2 && d.length === 2) {
+      return `${y}-${m}-${d}`
+    }
+  }
+  return val
+}
 
 let refreshInterval: ReturnType<typeof setInterval> | null = null
 
@@ -295,11 +316,11 @@ function formatDate(dateStr: string | null): string {
           <div class="flex items-center gap-3 px-2">
             <div class="flex flex-col gap-0.5">
               <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">Start Date</span>
-              <input v-model="startDate" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
+              <input v-model="startDate" @blur="startDate = padDate(startDate)" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
             </div>
             <div class="flex flex-col gap-0.5">
               <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">End Date</span>
-              <input v-model="endDate" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
+              <input v-model="endDate" @blur="endDate = padDate(endDate)" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
             </div>
           </div>
         </div>

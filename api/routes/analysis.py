@@ -85,6 +85,12 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
         
         task_state.start_job(request.tickers, expanded_dates)
         
+        def progress_cb(ticker: str, date: str):
+            with task_state.lock:
+                if task_state.active_job:
+                    task_state.active_job["current_ticker"] = ticker
+                    task_state.active_job["current_date"] = date
+
         summary = run_batch_analysis(
             tickers=request.tickers,
             dates=expanded_dates,
@@ -92,7 +98,8 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
             registry=registry,
             skip_completed=request.skip_completed,
             force=request.force,
-            abort_event=task_state.abort_event
+            abort_event=task_state.abort_event,
+            progress_callback=progress_cb
         )
         logger.info(f"Background analysis complete: {summary}")
         print(f"DEBUG: Analysis complete: {summary}")

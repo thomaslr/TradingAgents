@@ -26,22 +26,29 @@ let statusPolling: any = null
 
 // Form State
 const tickersInput = ref(localStorage.getItem('trading_tickers') || '')
-const provider = ref('openai')
-const quickModel = ref('')
-const deepModel = ref('')
-const executionType = ref<'now' | 'schedule'>('now')
-const intervalMinutes = ref(1440) // Default to daily (24 * 60)
+const provider = ref(localStorage.getItem('trading_provider') || 'openai')
+const quickModel = ref(localStorage.getItem('trading_quick_model') || '')
+const deepModel = ref(localStorage.getItem('trading_deep_model') || '')
+const executionType = ref<'now' | 'schedule'>((localStorage.getItem('trading_execution') as any) || 'now')
+const intervalMinutes = ref(Number(localStorage.getItem('trading_interval')) || 1440)
 
 // Expanded Options
-const dateFrom = ref('')
-const dateTo = ref('')
-const force = ref(false)
-const depth = ref(1)
+const dateFrom = ref(localStorage.getItem('trading_from') || '')
+const dateTo = ref(localStorage.getItem('trading_to') || '')
+const force = ref(localStorage.getItem('trading_force') === 'true')
+const depth = ref(Number(localStorage.getItem('trading_depth')) || 1)
 
-// Persist tickers to localStorage
-watch(tickersInput, (val) => {
-  localStorage.setItem('trading_tickers', val)
-})
+// Persist Form State to localStorage
+watch(tickersInput, (v) => localStorage.setItem('trading_tickers', v))
+watch(provider, (v) => localStorage.setItem('trading_provider', v))
+watch(quickModel, (v) => localStorage.setItem('trading_quick_model', v))
+watch(deepModel, (v) => localStorage.setItem('trading_deep_model', v))
+watch(executionType, (v) => localStorage.setItem('trading_execution', v))
+watch(intervalMinutes, (v) => localStorage.setItem('trading_interval', String(v)))
+watch(dateFrom, (v) => localStorage.setItem('trading_from', v))
+watch(dateTo, (v) => localStorage.setItem('trading_to', v))
+watch(force, (v) => localStorage.setItem('trading_force', String(v)))
+watch(depth, (v) => localStorage.setItem('trading_depth', String(v)))
 
 onMounted(async () => {
   await loadDefaultConfig()
@@ -59,10 +66,14 @@ async function checkStatus() {
   try {
     const status = await fetchAnalysisStatus()
     isRunning.value = status.running
-    
     if (status.running && status.job) {
       const tickers = status.job.tickers.join(', ')
-      currentJobParams.value = `Tickers: ${tickers} | Depth: ${depth.value} | Force: ${force.value}`
+      // Update with currently processing ticker if available from backend
+      const current = status.job.current_ticker 
+        ? `Analyzing: ${status.job.current_ticker} (${status.job.current_date})` 
+        : `Initializing...`
+        
+      currentJobParams.value = `${current} | Batch: ${tickers}`
       successMessage.value = `Analysis in progress...`
     } else {
       if (isRunning.value === false && isStopping.value === true) {
@@ -201,6 +212,21 @@ async function handleDeleteSchedule(id: string) {
   }
 }
 
+function padDate(val: string): string {
+  if (!val) return val
+  const parts = val.split('-').map(p => p.trim())
+  if (parts.length === 3) {
+    let [y, m, d] = parts
+    if (y.length === 2) y = '20' + y
+    if (m.length === 1) m = '0' + m
+    if (d.length === 1) d = '0' + d
+    if (y.length === 4 && m.length === 2 && d.length === 2) {
+      return `${y}-${m}-${d}`
+    }
+  }
+  return val
+}
+
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '—'
   const d = new Date(dateStr)
@@ -322,13 +348,11 @@ function formatDate(dateStr: string | null): string {
             <div class="grid grid-cols-2 gap-4">
               <div class="space-y-2">
                 <span class="text-[10px] uppercase font-black opacity-40">Start Date</span>
-                <input v-model="dateFrom" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
-
+                <input v-model="dateFrom" @blur="dateFrom = padDate(dateFrom)" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
               </div>
               <div class="space-y-2">
                 <span class="text-[10px] uppercase font-black opacity-40">End Date</span>
-                <input v-model="dateTo" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
-
+                <input v-model="dateTo" @blur="dateTo = padDate(dateTo)" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
               </div>
             </div>
           </div>

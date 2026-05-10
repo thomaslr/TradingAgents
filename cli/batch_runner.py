@@ -170,6 +170,9 @@ def _extract_trading_results(final_state: dict, decision: str, ticker: str, trad
     return results
 
 
+from typing import Any, Dict, List, Optional, Callable
+
+
 def run_batch_analysis(
     tickers: List[str],
     dates: List[str],
@@ -178,6 +181,7 @@ def run_batch_analysis(
     skip_completed: bool = True,
     force: bool = False,
     abort_event: Optional[threading.Event] = None,
+    progress_callback: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
     """Execute batch analysis sequentially.
 
@@ -225,6 +229,8 @@ def run_batch_analysis(
                     }
 
                 progress.update(task, description=f"{ticker} {date}")
+                if progress_callback:
+                    progress_callback(ticker, date)
 
                 # Check existing run
                 existing = registry.find_run(
