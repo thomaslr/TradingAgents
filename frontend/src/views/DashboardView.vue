@@ -106,18 +106,22 @@ const isIndeterminate = computed(() => {
 
 function toggleSelectAll() {
   if (allSelected.value) {
-    selectedRuns.value.clear()
+    selectedRuns.value = new Set()
   } else {
-    processedRuns.value.forEach(r => selectedRuns.value.add(r.id))
+    const next = new Set(selectedRuns.value)
+    processedRuns.value.forEach(r => next.add(r.id))
+    selectedRuns.value = next
   }
 }
 
 function toggleSelect(id: number) {
-  if (selectedRuns.value.has(id)) {
-    selectedRuns.value.delete(id)
+  const next = new Set(selectedRuns.value)
+  if (next.has(id)) {
+    next.delete(id)
   } else {
-    selectedRuns.value.add(id)
+    next.add(id)
   }
+  selectedRuns.value = next
 }
 
 function handleSort(column: keyof Run) {
@@ -136,7 +140,7 @@ async function handleDeleteSelected() {
   loading.value = true
   try {
     await deleteRuns(Array.from(selectedRuns.value))
-    selectedRuns.value.clear()
+    selectedRuns.value = new Set()
     await loadRuns()
   } catch (e: any) {
     alert(e.message || 'Failed to delete runs')
@@ -150,7 +154,9 @@ async function handleDelete(run: Run) {
   loading.value = true
   try {
     await deleteRun(run.id)
-    selectedRuns.value.delete(run.id)
+    const next = new Set(selectedRuns.value)
+    next.delete(run.id)
+    selectedRuns.value = next
     await loadRuns()
   } catch (e: any) {
     alert(e.message || 'Failed to delete run')
