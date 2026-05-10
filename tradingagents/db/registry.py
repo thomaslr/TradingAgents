@@ -135,10 +135,27 @@ class RunRegistry:
             """INSERT INTO runs
                    (ticker, trade_date, provider, quick_model, deep_model,
                     depth, status, started_at, report_dir)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+               ON CONFLICT(ticker, trade_date, provider, quick_model, deep_model, depth)
+               DO UPDATE SET
+                   status = 'pending',
+                   started_at = EXCLUDED.started_at,
+                   report_dir = EXCLUDED.report_dir,
+                   rating = NULL,
+                   action = NULL,
+                   entry_price = NULL,
+                   stop_loss = NULL,
+                   price_target = NULL,
+                   position_sizing = NULL,
+                   time_horizon = NULL,
+                   close_price = NULL,
+                   error_message = NULL,
+                   completed_at = NULL
+            """,
             (ticker, trade_date, provider, quick_model, deep_model,
              depth, _now_iso(), report_dir),
         )
+
         self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
 

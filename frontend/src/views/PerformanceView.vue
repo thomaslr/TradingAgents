@@ -17,6 +17,15 @@ const strategySource = ref<'RATING' | 'ACTION'>('RATING') // Expert Signal vs Fi
 const costModel = ref<'FLAT' | 'IBKR'>('FLAT')
 const timeRange = ref<'1M' | '3M' | '6M' | 'YTD' | 'ALL'>('6M')
 
+// Research Mode Filters
+const selectedQuickModel = ref('ALL')
+const selectedDeepModel = ref('ALL')
+const selectedDepth = ref('ALL')
+
+const expandedRows = ref<Set<string>>(new Set())
+const expandedReports = ref<Record<string, any>>({})
+
+
 
 
 let chart: any = null
@@ -94,13 +103,40 @@ const filteredEntries = computed(() => {
     const cutoffStr = cutoff.toISOString().split('T')[0]
     result = result.filter(e => e.date >= cutoffStr)
   }
+
+  // Research Mode Filters
+  if (selectedQuickModel.value !== 'ALL') {
+    result = result.filter(e => e.quick_model === selectedQuickModel.value)
+  }
+  if (selectedDeepModel.value !== 'ALL') {
+    result = result.filter(e => e.deep_model === selectedDeepModel.value)
+  }
+  if (selectedDepth.value !== 'ALL') {
+    result = result.filter(e => String(e.depth) === selectedDepth.value)
+  }
   
   return result
 })
 
+const availableQuickModels = computed(() => {
+  const models = new Set(entries.value.map(e => e.quick_model).filter(Boolean))
+  return ['ALL', ...Array.from(models).sort()]
+})
+
+const availableDeepModels = computed(() => {
+  const models = new Set(entries.value.map(e => e.deep_model).filter(Boolean))
+  return ['ALL', ...Array.from(models).sort()]
+})
+
+const availableDepths = computed(() => {
+  const depths = new Set(entries.value.map(e => String(e.depth)).filter(Boolean))
+  return ['ALL', ...Array.from(depths).sort()]
+})
+
+
 
 const stats = computed(() => {
-  if (filteredEntries.value.length === 0) return { totalRaw: 0, totalAlpha: 0, winRate: 0, count: 0 }
+  if (filteredEntries.value.length === 0) return { totalRaw: 0, totalAlpha: 0, winRate: 0, count: 0, totalRuntime: 0 }
   
   const wins = filteredEntries.value.filter(e => parsePct(e.raw) > 0).length
   
@@ -112,13 +148,20 @@ const stats = computed(() => {
     ? performanceData.value.benchPoints[performanceData.value.benchPoints.length - 1].value 
     : 100
     
+  const totalRuntime = filteredEntries.value.reduce((acc, e) => {
+    const r = parseFloat(e.runtime_sec || '0')
+    return acc + (isNaN(r) ? 0 : r)
+  }, 0)
+
   return {
     totalRaw: 0,
     totalAlpha: stratFinal - benchFinal,
     winRate: (wins / filteredEntries.value.length) * 100,
-    count: filteredEntries.value.length
+    count: filteredEntries.value.length,
+    totalRuntime
   }
 })
+
 
 
 const performanceData = computed(() => {
@@ -271,8 +314,6 @@ watch([showCosts, performanceData, benchmarkType, strategySource, costModel, tim
 
 
 
-const expandedRows = ref<Set<string>>(new Set())
-
 function toggleRow(id: string) {
   if (expandedRows.value.has(id)) expandedRows.value.delete(id)
   else expandedRows.value.add(id)
@@ -395,7 +436,38 @@ function getSignalLabel(text: string) {
           <Trash2 :size="18" />
         </button>
       </div>
+
+      <!-- Research Mode Filter Bar -->
+      <div class="flex flex-wrap gap-4 items-center bg-white/5 p-4 rounded-xl border border-white/10 mt-4">
+        <div class="flex flex-col gap-1">
+          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Quick LLM</span>
+          <select v-model="selectedQuickModel" class="bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded px-2 py-1 text-xs focus:outline-none focus:border-[var(--color-accent-primary)] min-w-[120px]">
+            <option v-for="m in availableQuickModels" :key="m" :value="m">{{ m }}</option>
+          </select>
+        </div>
+        <div class="flex flex-col gap-1">
+          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Deep LLM</span>
+          <select v-model="selectedDeepModel" class="bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded px-2 py-1 text-xs focus:outline-none focus:border-[var(--color-accent-primary)] min-w-[120px]">
+            <option v-for="m in availableDeepModels" :key="m" :value="m">{{ m }}</option>
+          </select>
+        </div>
+        <div class="flex flex-col gap-1">
+          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Debate Depth</span>
+          <select v-model="selectedDepth" class="bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded px-2 py-1 text-xs focus:outline-none focus:border-[var(--color-accent-primary)] min-w-[100px]">
+            <option v-for="d in availableDepths" :key="d" :value="d">{{ d === 'ALL' ? 'ALL' : d + ' Rounds' }}</option>
+          </select>
+        </div>
+        
+        <div class="flex-1"></div>
+        
+        <!-- Efficiency Card -->
+        <div v-if="stats.count > 0" class="flex flex-col items-end px-4 border-l border-white/10">
+          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)]">Efficiency Score</span>
+          <span class="text-lg font-bold text-yellow-400">{{ (stats.totalAlpha / (stats.totalRuntime / 60 || 1)).toFixed(2) }} <small class="text-[8px] opacity-50">Alpha/Min</small></span>
+        </div>
+      </div>
     </div>
+
 
 
     <!-- Stats Grid -->
@@ -471,12 +543,14 @@ function getSignalLabel(text: string) {
             <tr class="text-xs uppercase tracking-wider text-[var(--color-text-muted)] border-b border-[var(--color-border-default)]">
               <th class="px-6 py-4 font-semibold">Date</th>
               <th class="px-6 py-4 font-semibold">Ticker</th>
-              <th class="px-6 py-4 font-semibold">Rating (AI)</th>
-              <th class="px-6 py-4 font-semibold">Action (PM)</th>
-              <th class="px-6 py-4 font-semibold">Return</th>
+              <th class="px-6 py-4 font-semibold">Sim Configuration</th>
+              <th class="px-6 py-4 font-semibold text-right">Strat Return</th>
+              <th class="px-6 py-4 font-semibold text-right">Bench Return</th>
               <th class="px-6 py-4 font-semibold text-right">Alpha</th>
+              <th class="px-6 py-4 font-semibold text-right">Runtime</th>
               <th class="px-6 py-4 font-semibold text-right">Details</th>
             </tr>
+
           </thead>
           <tbody class="divide-y divide-white/[0.03]">
 
@@ -485,29 +559,73 @@ function getSignalLabel(text: string) {
                 <td class="px-6 py-4 text-sm font-mono text-[var(--color-text-muted)]">{{ entry.date }}</td>
                 <td class="px-6 py-4 font-bold">{{ entry.ticker }}</td>
                 <td class="px-6 py-4">
-                  <span class="px-2 py-0.5 rounded text-[10px] font-black bg-white/5 border" :class="getRatingClass(entry.rating)">
-                    {{ getSignalLabel(entry.rating) }}
-                  </span>
+                  <div class="flex flex-col">
+                    <span class="text-xs font-bold text-white">{{ entry.quick_model }}</span>
+                    <span class="text-[10px] text-[var(--color-text-muted)]">Depth: {{ entry.depth }} | Rating: {{ getSignalLabel(entry.rating) }}</span>
+                  </div>
                 </td>
-                <td class="px-6 py-4">
-                  <span class="px-2 py-0.5 rounded text-[10px] font-black bg-white/5 border" :class="getRatingClass(entry.decision)">
-                    {{ getSignalLabel(entry.decision) }}
-                  </span>
+
+                <!-- Realized Strategy Return -->
+                <td class="px-6 py-4 text-right font-mono font-bold text-sm" :class="(() => {
+                  const signal = strategySource === 'RATING' ? entry.rating : entry.decision
+                  const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
+                  const stratRet = isLong ? parsePct(entry.raw) : 0
+                  return stratRet >= 0 ? 'text-green-400' : 'text-red-400'
+                })()">
+                  {{ (() => {
+                    const signal = strategySource === 'RATING' ? entry.rating : entry.decision
+                    const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
+                    const stratRet = isLong ? parsePct(entry.raw) : 0
+                    return (stratRet * 100).toFixed(2) + '%'
+                  })() }}
                 </td>
-                <td class="px-6 py-4 font-mono font-bold text-sm" :class="parsePct(entry.raw) >= 0 ? 'text-green-400' : 'text-red-400'">
-                  {{ entry.raw }}
+
+                <!-- Benchmark Return -->
+                <td class="px-6 py-4 text-right font-mono text-xs text-[var(--color-text-muted)]">
+                  {{ (() => {
+                    const raw = parsePct(entry.raw)
+                    const alpha = parsePct(entry.alpha)
+                    const benchRet = benchmarkType === 'SPY' ? (raw - alpha) : raw
+                    return (benchRet * 100).toFixed(2) + '%'
+                  })() }}
                 </td>
-                <td class="px-6 py-4 font-mono text-xs" :class="parsePct(entry.alpha) >= 0 ? 'text-green-400' : 'text-red-400'">
-                  {{ entry.alpha }}
+
+                <!-- Realized Alpha -->
+                <td class="px-6 py-4 text-right font-mono font-bold text-sm" :class="(() => {
+                  const signal = strategySource === 'RATING' ? entry.rating : entry.decision
+                  const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
+                  const stratRet = isLong ? parsePct(entry.raw) : 0
+                  const raw = parsePct(entry.raw)
+                  const alpha = parsePct(entry.alpha)
+                  const benchRet = benchmarkType === 'SPY' ? (raw - alpha) : raw
+                  const realizedAlpha = stratRet - benchRet
+                  return realizedAlpha >= 0 ? 'text-green-400' : 'text-red-400'
+                })()">
+                  {{ (() => {
+                    const signal = strategySource === 'RATING' ? entry.rating : entry.decision
+                    const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
+                    const stratRet = isLong ? parsePct(entry.raw) : 0
+                    const raw = parsePct(entry.raw)
+                    const alpha = parsePct(entry.alpha)
+                    const benchRet = benchmarkType === 'SPY' ? (raw - alpha) : raw
+                    const realizedAlpha = stratRet - benchRet
+                    return (realizedAlpha >= 0 ? '+' : '') + (realizedAlpha * 100).toFixed(2) + '%'
+                  })() }}
                 </td>
+
+                <td class="px-6 py-4 text-right font-mono text-xs text-[var(--color-text-muted)]">
+                  {{ entry.runtime_sec ? parseFloat(entry.runtime_sec).toFixed(1) + 's' : 'n/a' }}
+                </td>
+
                 <td class="px-6 py-4 text-right">
                   <button 
                     @click="toggleRow(entry.date + entry.ticker)"
                     class="text-[var(--color-accent-primary)] hover:underline text-xs font-bold"
                   >
-                    {{ expandedRows.has(entry.date + entry.ticker) ? 'Hide Details' : 'View Reasoning' }}
+                    {{ expandedRows.has(entry.date + entry.ticker) ? 'Hide' : 'Why?' }}
                   </button>
                 </td>
+
               </tr>
               <!-- Expanded Detail Row -->
               <tr v-if="expandedRows.has(entry.date + entry.ticker)" class="bg-black/40">

@@ -302,6 +302,8 @@ class TradingAgentsGraph:
 
     def _run_graph(self, company_name, trade_date):
         """Execute the graph and write the resulting state to disk and memory log."""
+        start_time = datetime.now()
+        
         # Initialize state — inject memory log context for PM.
         past_context = self.memory_log.get_past_context(company_name)
         init_agent_state = self.propagator.create_initial_state(
@@ -326,18 +328,26 @@ class TradingAgentsGraph:
         else:
             final_state = self.graph.invoke(init_agent_state, **args)
 
+        end_time = datetime.now()
+        runtime_sec = (end_time - start_time).total_seconds()
+
         # Store current state for reflection.
         self.curr_state = final_state
 
-        # Log state to disk.
-        self._log_state(trade_date, final_state)
+        # Log state to disk with simulation-aware naming
+        log_path = self._log_state(trade_date, final_state)
 
         # Store decision for deferred reflection on the next same-ticker run.
         self.memory_log.store_decision(
             ticker=company_name,
             trade_date=trade_date,
             final_trade_decision=final_state["final_trade_decision"],
+            quick_model=self.config.get("quick_think_llm", "unknown"),
+            deep_model=self.config.get("deep_think_llm", "unknown"),
+            depth=self.config.get("max_debate_rounds", 1),
+            runtime_sec=runtime_sec
         )
+
 
         # Clear checkpoint on successful completion to avoid stale state.
         if self.config.get("checkpoint_enabled"):
@@ -347,8 +357,8 @@ class TradingAgentsGraph:
 
         return final_state, self.process_signal(final_state["final_trade_decision"])
 
-    def _log_state(self, trade_date, final_state):
-        """Log the final state to a JSON file."""
+    def _log_state(self, trade_date, final_state) -> Path:
+        """Log the final state to a JSON file using a Simulation ID."""
         self.log_states_dict[str(trade_date)] = {
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
@@ -379,15 +389,26 @@ class TradingAgentsGraph:
             "final_trade_decision": final_state["final_trade_decision"],
         }
 
-        # Save to file. Reject ticker values that would escape the
-        # results directory when joined as a path component.
+        # Simulation ID Logic: reports/{ticker}/{date}/{sim_id}.json
         safe_ticker = safe_ticker_component(self.ticker)
-        directory = Path(self.config["results_dir"]) / safe_ticker / "TradingAgentsStrategy_logs"
+        quick_model = self.config.get("quick_think_llm", "unknown").replace(":", "-")
+        deep_model = self.config.get("deep_think_llm", "unknown").replace(":", "-")
+        depth = self.config.get("max_debate_rounds", 1)
+
+        ts = datetime.now().strftime("%H%M%S")
+        
+        sim_id = f"{quick_model}_{deep_model}_d{depth}_{ts}"
+        
+        directory = Path(self.config["results_dir"]) / safe_ticker / str(trade_date)
         directory.mkdir(parents=True, exist_ok=True)
 
-        log_path = directory / f"full_states_log_{trade_date}.json"
+        log_path = directory / f"{sim_id}.json"
+        
         with open(log_path, "w", encoding="utf-8") as f:
             json.dump(self.log_states_dict[str(trade_date)], f, indent=4)
+            
+        return log_path
+
 
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""

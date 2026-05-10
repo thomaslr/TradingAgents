@@ -322,11 +322,13 @@ function formatDate(dateStr: string | null): string {
             <div class="grid grid-cols-2 gap-4">
               <div class="space-y-2">
                 <span class="text-[10px] uppercase font-black opacity-40">Start Date</span>
-                <input v-model="dateFrom" :disabled="isRunning" type="date" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+                <input v-model="dateFrom" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+
               </div>
               <div class="space-y-2">
                 <span class="text-[10px] uppercase font-black opacity-40">End Date</span>
-                <input v-model="dateTo" :disabled="isRunning" type="date" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+                <input v-model="dateTo" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+
               </div>
             </div>
           </div>
@@ -497,19 +499,4 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   cursor: pointer;
 }
 </style>
-.scan-anim {
-  width: 200%;
-  animation: scan 4s linear infinite;
-}
 
-@keyframes scan {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(100%); }
-}
-
-input[type="date"]::-webkit-calendar-picker-indicator {
-  filter: invert(1);
-  opacity: 0.5;
-  cursor: pointer;
-}
-</style>

@@ -33,21 +33,22 @@ class TradingMemoryLog:
         ticker: str,
         trade_date: str,
         final_trade_decision: str,
+        quick_model: str = "unknown",
+        deep_model: str = "unknown",
+        depth: int = 1,
+        runtime_sec: float = 0.0
     ) -> None:
         """Append pending entry at end of propagate(). No LLM call."""
         if not self._log_path:
             return
-        # Idempotency guard: fast raw-text scan instead of full parse
-        if self._log_path.exists():
-            raw = self._log_path.read_text(encoding="utf-8")
-            for line in raw.splitlines():
-                if line.startswith(f"[{trade_date} | {ticker} |") and line.endswith("| pending]"):
-                    return
+            
         rating = parse_rating(final_trade_decision)
-        tag = f"[{trade_date} | {ticker} | {rating} | pending]"
+        # Store metadata in the tag: [date | ticker | rating | pending | quick | deep | depth | runtime]
+        tag = f"[{trade_date} | {ticker} | {rating} | pending | {quick_model} | {deep_model} | {depth} | {runtime_sec:.1f}s]"
         entry = f"{tag}\n\nDECISION:\n{final_trade_decision}{self._SEPARATOR}"
         with open(self._log_path, "a", encoding="utf-8") as f:
             f.write(entry)
+
 
     # --- Read path (Phase A) ---
 
@@ -136,15 +137,21 @@ class TradingMemoryLog:
             if (
                 not updated
                 and tag_line.startswith(pending_prefix)
-                and tag_line.endswith("| pending]")
+                and " | pending" in tag_line
             ):
-                # Parse rating from the existing pending tag
+
+                # Parse fields from the existing pending tag
                 fields = [f.strip() for f in tag_line[1:-1].split("|")]
                 rating = fields[2]
-                new_tag = (
-                    f"[{trade_date} | {ticker} | {rating}"
-                    f" | {raw_pct} | {alpha_pct} | {holding_days}d]"
-                )
+                
+                # Reconstruct tag with outcomes, preserving any extra research metadata (model, depth, etc.)
+                new_fields = [trade_date, ticker, rating, raw_pct, alpha_pct, f"{holding_days}d"]
+                if len(fields) > 4:
+                    # Append everything after the original 'pending' marker
+                    new_fields.extend(fields[4:])
+                
+                new_tag = "[" + " | ".join(new_fields) + "]"
+
                 rest = "\n".join(lines[1:])
                 new_blocks.append(
                     f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{reflection}"
@@ -265,21 +272,43 @@ class TradingMemoryLog:
         fields = [f.strip() for f in tag_line[1:-1].split("|")]
         if len(fields) < 4:
             return None
+            
+        # [date | ticker | rating | outcome/pending | ...metadata ]
+        is_pending = fields[3] == "pending"
+        
         entry = {
             "date": fields[0],
             "ticker": fields[1],
             "rating": fields[2],
-            "pending": fields[3] == "pending",
-            "raw": fields[3] if fields[3] != "pending" else None,
-            "alpha": fields[4] if len(fields) > 4 else None,
-            "holding": fields[5] if len(fields) > 5 else None,
+            "pending": is_pending,
         }
+        
+        if is_pending:
+            entry["raw"] = None
+            entry["alpha"] = None
+            entry["holding"] = None
+            # New metadata fields for research (Simulation ID support)
+            entry["quick_model"] = fields[4] if len(fields) > 4 else "unknown"
+            entry["deep_model"] = fields[5] if len(fields) > 5 else "unknown"
+            entry["depth"] = fields[6] if len(fields) > 6 else "1"
+            entry["runtime_sec"] = fields[7] if len(fields) > 7 else "0.0"
+        else:
+            entry["raw"] = fields[3]
+            entry["alpha"] = fields[4] if len(fields) > 4 else None
+            entry["holding"] = fields[5] if len(fields) > 5 else None
+            # Legacy entries might not have these, but new ones will shift them
+            entry["quick_model"] = fields[6] if len(fields) > 6 else "unknown"
+            entry["deep_model"] = fields[7] if len(fields) > 7 else "unknown"
+            entry["depth"] = fields[8] if len(fields) > 8 else "1"
+            entry["runtime_sec"] = fields[9] if len(fields) > 9 else "0.0"
+
         body = "\n".join(lines[1:]).strip()
         decision_match = self._DECISION_RE.search(body)
         reflection_match = self._REFLECTION_RE.search(body)
         entry["decision"] = decision_match.group(1).strip() if decision_match else ""
         entry["reflection"] = reflection_match.group(1).strip() if reflection_match else ""
         return entry
+
 
     def _format_full(self, e: dict) -> str:
         raw = e["raw"] or "n/a"
