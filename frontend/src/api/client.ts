@@ -91,8 +91,15 @@ export interface OHLCData {
   volumes: VolumeItem[]
 }
 
-export async function fetchOHLC(ticker: string, period = '1y', interval = '1d'): Promise<OHLCData> {
-  const { data } = await api.get(`/market/ohlc/${ticker}`, { params: { period, interval } })
+export async function fetchOHLC(ticker: string, period = '1y', interval = '1d', start?: string, end?: string): Promise<OHLCData> {
+  const params: any = { interval }
+  if (start && end) {
+    params.start = start
+    params.end = end
+  } else {
+    params.period = period
+  }
+  const { data } = await api.get(`/market/ohlc/${ticker}`, { params })
   return data
 }
 

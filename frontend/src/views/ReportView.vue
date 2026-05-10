@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchReportList, fetchReportContent, fetchRuns, fetchTickers, type Run } from '../api/client'
 import { marked } from 'marked'
@@ -11,8 +11,21 @@ const router = useRouter()
 
 const tickerInput = ref(props.ticker || '')
 const dateInput = ref(props.date || '')
+const dateFrom = ref('')
+const dateTo = ref('')
 const availableTickers = ref<{ticker: string, name: string}[]>([])
-const runsForTicker = ref<Run[]>([])
+const allRunsForTicker = ref<Run[]>([])
+
+const filteredRunsForTicker = computed(() => {
+  let result = allRunsForTicker.value
+  if (dateFrom.value) {
+    result = result.filter(r => r.trade_date >= dateFrom.value)
+  }
+  if (dateTo.value) {
+    result = result.filter(r => r.trade_date <= dateTo.value)
+  }
+  return result
+})
 
 const files = ref<string[]>([])
 const activeFile = ref('')
@@ -39,10 +52,10 @@ async function loadInitialData() {
     }
 
     if (tickerInput.value) {
-      runsForTicker.value = (await fetchRuns(tickerInput.value)).filter(r => r.status === 'completed')
+      allRunsForTicker.value = (await fetchRuns(tickerInput.value)).filter(r => r.status === 'completed')
       
-      if (!dateInput.value && runsForTicker.value.length > 0) {
-        dateInput.value = runsForTicker.value[0].trade_date
+      if (!dateInput.value && filteredRunsForTicker.value.length > 0) {
+        dateInput.value = filteredRunsForTicker.value[0].trade_date
       }
     }
 
@@ -54,7 +67,7 @@ async function loadInitialData() {
       await loadReport()
     } else {
       loading.value = false
-      error.value = 'No reports found.'
+      if (!tickerInput.value) error.value = 'No reports found.'
     }
   } catch (e: any) {
     console.error("Failed to load initial data", e)
@@ -68,7 +81,7 @@ async function loadReport() {
   try {
     const fileList = await fetchReportList(tickerInput.value, dateInput.value)
     files.value = fileList
-    run.value = runsForTicker.value.find(r => r.trade_date === dateInput.value) || null
+    run.value = allRunsForTicker.value.find(r => r.trade_date === dateInput.value) || null
 
     if (fileList.length > 0) {
       const preferred = fileList.find(f => f.includes('final_trade_decision')) || fileList[0]
@@ -93,9 +106,9 @@ function changeSelection() {
 
 async function changeTicker() {
   if (tickerInput.value) {
-    runsForTicker.value = (await fetchRuns(tickerInput.value)).filter(r => r.status === 'completed')
-    if (runsForTicker.value.length > 0) {
-      dateInput.value = runsForTicker.value[0].trade_date
+    allRunsForTicker.value = (await fetchRuns(tickerInput.value)).filter(r => r.status === 'completed')
+    if (filteredRunsForTicker.value.length > 0) {
+      dateInput.value = filteredRunsForTicker.value[0].trade_date
       changeSelection()
     } else {
       dateInput.value = ''
@@ -163,13 +176,26 @@ function cleanFilename(name: string): string {
             <select
               v-model="dateInput"
               @change="changeSelection"
-              class="w-full bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded px-2 py-1 text-xs text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent-primary)]"
-              :disabled="runsForTicker.length === 0"
+              class="w-full bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded px-2 py-1 text-xs text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent-primary)] mb-2"
+              :disabled="filteredRunsForTicker.length === 0"
             >
-              <option v-for="r in runsForTicker" :key="r.trade_date" :value="r.trade_date">
+              <option v-for="r in filteredRunsForTicker" :key="r.trade_date" :value="r.trade_date">
                 {{ r.trade_date }}
               </option>
+              <option v-if="filteredRunsForTicker.length === 0" disabled>No reports in range</option>
             </select>
+
+            <!-- Custom Filter -->
+            <div class="flex flex-col gap-2 p-2 bg-black/20 rounded-lg border border-white/5">
+              <div class="flex items-center justify-between">
+                <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">Date Filter</span>
+                <button @click="dateFrom = ''; dateTo = ''" class="text-[9px] uppercase font-black text-[var(--color-accent-primary)] hover:underline">Clear</button>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <input v-model="dateFrom" type="text" placeholder="YYYY-MM-DD" class="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded px-2 py-1 text-[10px] focus:outline-none" />
+                <input v-model="dateTo" type="text" placeholder="YYYY-MM-DD" class="w-full bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded px-2 py-1 text-[10px] focus:outline-none" />
+              </div>
+            </div>
           </div>
         </div>
 

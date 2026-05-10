@@ -15,7 +15,12 @@ const selectedTicker = ref('ALL')
 const benchmarkType = ref<'SPY' | 'ASSET'>('ASSET') // Default to Buy & Hold comparison
 const strategySource = ref<'RATING' | 'ACTION'>('RATING') // Expert Signal vs Final Action
 const costModel = ref<'FLAT' | 'IBKR'>('FLAT')
-const timeRange = ref<'1M' | '3M' | '6M' | 'YTD' | 'ALL'>('6M')
+const timeRange = ref<'1M' | '3M' | '6M' | 'YTD' | 'ALL' | 'CUSTOM'>('6M')
+const dateFrom = ref('')
+const dateTo = ref('')
+
+// Visible Chart Range (for dynamic stats)
+const visibleTimeRange = ref<{ from: string; to: string } | null>(null)
 
 // Research Mode Filters
 const selectedQuickModel = ref('ALL')
@@ -91,7 +96,10 @@ const filteredEntries = computed(() => {
   }
   
   // Apply Time Range Filter
-  if (timeRange.value !== 'ALL') {
+  if (timeRange.value === 'CUSTOM') {
+    if (dateFrom.value) result = result.filter(e => e.date >= dateFrom.value)
+    if (dateTo.value) result = result.filter(e => e.date <= dateTo.value)
+  } else if (timeRange.value !== 'ALL') {
     const now = new Date()
     let cutoff = new Date()
     
@@ -118,6 +126,94 @@ const filteredEntries = computed(() => {
   return result
 })
 
+const visibleEntries = computed(() => {
+  if (!visibleTimeRange.value) return filteredEntries.value
+  return filteredEntries.value.filter(e => 
+    e.date >= visibleTimeRange.value!.from && 
+    e.date <= visibleTimeRange.value!.to
+  )
+})
+
+const stats = computed(() => {
+  if (visibleEntries.value.length === 0) return { totalRaw: 0, totalAlpha: 0, winRate: 0, count: 0, totalRuntime: 0, stratROI: 0, benchROI: 0 }
+  
+  const wins = visibleEntries.value.filter(e => {
+    // We need to determine if it was a win based on the strategy logic for THAT entry
+    const signal = strategySource.value === 'RATING' ? e.rating : e.decision
+    const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
+    const stratRet = isLong ? parsePct(e.raw) : 0
+    
+    const raw = parsePct(e.raw)
+    const alpha = parsePct(e.alpha)
+    const benchRet = benchmarkType.value === 'SPY' ? (raw - alpha) : raw
+    
+    return stratRet > benchRet
+  }).length
+  
+  // Calculate dynamic ROI/Alpha based on the visible points
+  // We need to recalculate ROI starting from the first visible date
+  let strat = 100
+  let bench = 100
+  
+  const dateGroups = new Map<string, MemoryEntry[]>()
+  visibleEntries.value.forEach(e => {
+    if (!dateGroups.has(e.date)) dateGroups.set(e.date, [])
+    dateGroups.get(e.date)!.push(e)
+  })
+
+  const sortedDates = Array.from(dateGroups.keys()).sort()
+  const tickerStates = new Map<string, boolean>()
+
+  sortedDates.forEach(date => {
+    const dayEntries = dateGroups.get(date)!
+    let totalStratRet = 0
+    let totalBenchRet = 0
+    
+    dayEntries.forEach(e => {
+      const raw = parsePct(e.raw)
+      const alpha = parsePct(e.alpha)
+      const spy = raw - alpha
+      const signal = strategySource.value === 'RATING' ? e.rating : e.decision
+      const rating = signal.toLowerCase()
+      
+      if (rating.includes('buy') || rating.includes('overweight')) tickerStates.set(e.ticker, true)
+      else if (rating.includes('sell') || rating.includes('underweight')) tickerStates.set(e.ticker, false)
+      
+      const isLong = tickerStates.get(e.ticker) || false
+      let tickerStratRet = isLong ? raw : 0
+      if (showCosts.value && isLong) {
+        tickerStratRet -= (costModel.value === 'IBKR' ? 0.0015 : commissionPerTrade.value)
+      }
+      
+      const tickerBenchRet = benchmarkType.value === 'SPY' ? spy : raw
+      totalStratRet += tickerStratRet
+      totalBenchRet += tickerBenchRet
+    })
+
+    const avgStratRet = totalStratRet / dayEntries.length
+    const avgBenchRet = totalBenchRet / dayEntries.length
+    strat = strat * (1 + avgStratRet)
+    bench = bench * (1 + avgBenchRet)
+  })
+
+  const totalRuntime = visibleEntries.value.reduce((acc, e) => {
+    const r = parseFloat(e.runtime_sec || '0')
+    return acc + (isNaN(r) ? 0 : r)
+  }, 0)
+
+  return {
+    totalRaw: strat - 100,
+    totalAlpha: (strat - 100) - (bench - 100),
+    winRate: (wins / visibleEntries.value.length) * 100,
+    count: visibleEntries.value.length,
+    totalRuntime,
+    stratROI: strat - 100,
+    benchROI: bench - 100
+  }
+})
+
+
+
 const availableQuickModels = computed(() => {
   const models = new Set(entries.value.map(e => e.quick_model).filter(Boolean))
   return ['ALL', ...Array.from(models).sort()]
@@ -131,35 +227,6 @@ const availableDeepModels = computed(() => {
 const availableDepths = computed(() => {
   const depths = new Set(entries.value.map(e => String(e.depth)).filter(Boolean))
   return ['ALL', ...Array.from(depths).sort()]
-})
-
-
-
-const stats = computed(() => {
-  if (filteredEntries.value.length === 0) return { totalRaw: 0, totalAlpha: 0, winRate: 0, count: 0, totalRuntime: 0 }
-  
-  const wins = filteredEntries.value.filter(e => parsePct(e.raw) > 0).length
-  
-  // Calculate dynamic alpha based on the last points of our lines
-  const stratFinal = performanceData.value.stratPoints.length > 0 
-    ? performanceData.value.stratPoints[performanceData.value.stratPoints.length - 1].value 
-    : 100
-  const benchFinal = performanceData.value.benchPoints.length > 0 
-    ? performanceData.value.benchPoints[performanceData.value.benchPoints.length - 1].value 
-    : 100
-    
-  const totalRuntime = filteredEntries.value.reduce((acc, e) => {
-    const r = parseFloat(e.runtime_sec || '0')
-    return acc + (isNaN(r) ? 0 : r)
-  }, 0)
-
-  return {
-    totalRaw: 0,
-    totalAlpha: stratFinal - benchFinal,
-    winRate: (wins / filteredEntries.value.length) * 100,
-    count: filteredEntries.value.length,
-    totalRuntime
-  }
 })
 
 
@@ -277,6 +344,19 @@ function initChart() {
     title: 'Benchmark',
   })
 
+  // Subscribe to visible range changes
+  chart.timeScale().subscribeVisibleTimeRangeChange((range: any) => {
+    if (range && range.from && range.to) {
+       try {
+         const from = typeof range.from === 'string' ? range.from : new Date(range.from * 1000).toISOString().split('T')[0]
+         const to = typeof range.to === 'string' ? range.to : new Date(range.to * 1000).toISOString().split('T')[0]
+         visibleTimeRange.value = { from, to }
+       } catch (e) {
+         console.warn("Invalid chart range:", range)
+       }
+    }
+  })
+
   // Handle Resizing
   const handleResize = () => {
     if (chart && chartContainer.value) {
@@ -361,18 +441,28 @@ function getSignalLabel(text: string) {
         </div>
 
         <!-- Time Range -->
-        <div class="flex flex-col gap-1">
-          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Range</span>
-          <div class="flex items-center p-1 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
+        <div class="flex items-center gap-4 bg-[var(--color-bg-elevated)] p-1.5 rounded-xl border border-[var(--color-border-default)]">
+          <div class="flex items-center p-1 bg-black/20 rounded-lg">
             <button 
               v-for="range in (['1M', '3M', '6M', 'YTD', 'ALL'] as const)" 
               :key="range"
-              @click="timeRange = range"
+              @click="timeRange = range; dateFrom = ''; dateTo = ''"
               class="px-2 py-1 text-[10px] font-bold rounded transition-colors"
               :class="timeRange === range ? 'bg-[var(--color-accent-primary)] text-white' : 'text-[var(--color-text-muted)] hover:text-white'"
             >
               {{ range }}
             </button>
+          </div>
+          <div class="w-px h-8 bg-[var(--color-border-default)]"></div>
+          <div class="flex items-center gap-3 px-2">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">Start Date</span>
+              <input v-model="dateFrom" @input="timeRange = 'CUSTOM'" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
+            </div>
+            <div class="flex flex-col gap-0.5">
+              <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">End Date</span>
+              <input v-model="dateTo" @input="timeRange = 'CUSTOM'" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
+            </div>
           </div>
         </div>
 
@@ -489,13 +579,13 @@ function getSignalLabel(text: string) {
       <div class="glass p-4 rounded-xl space-y-1">
         <p class="text-xs text-[var(--color-text-muted)] font-medium uppercase tracking-wider">Strategy ROI</p>
         <p class="text-2xl font-bold text-[var(--color-accent-primary)]">
-          {{ performanceData.stratPoints.length > 0 ? ((performanceData.stratPoints[performanceData.stratPoints.length-1].value - 100)).toFixed(1) : '0' }}%
+          {{ stats.stratROI.toFixed(1) }}%
         </p>
       </div>
       <div class="glass p-4 rounded-xl space-y-1">
         <p class="text-xs text-[var(--color-text-muted)] font-medium uppercase tracking-wider">Benchmark ROI</p>
         <p class="text-2xl font-bold text-[#6366f1]">
-          {{ performanceData.benchPoints.length > 0 ? ((performanceData.benchPoints[performanceData.benchPoints.length-1].value - 100)).toFixed(1) : '0' }}%
+          {{ stats.benchROI.toFixed(1) }}%
         </p>
       </div>
     </div>

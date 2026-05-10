@@ -16,6 +16,8 @@ let volumeSeries: ISeriesApi<'Histogram'> | null = null
 const loading = ref(true)
 const error = ref('')
 const period = ref('3mo')
+const dateFrom = ref('')
+const dateTo = ref('')
 const tickerInput = ref(props.ticker || '')
 const availableTickers = ref<any[]>([])
 const runs = ref<Run[]>([])
@@ -71,7 +73,7 @@ async function loadChart() {
 
   try {
     const [ohlc, allRuns] = await Promise.all([
-      fetchOHLC(tickerInput.value, period.value),
+      fetchOHLC(tickerInput.value, period.value, '1d', dateFrom.value, dateTo.value),
       fetchRuns(tickerInput.value),
     ])
 
@@ -231,17 +233,36 @@ watch([period, showBuy, showSell, showHold], () => loadChart())
         </div>
 
         <!-- Period Selector -->
-        <div class="flex rounded-lg border border-[var(--color-border-default)] overflow-hidden">
-          <button
-            v-for="p in periods"
-            :key="p.value"
-            @click="period = p.value"
-            class="px-3 py-2 text-xs font-medium transition-colors"
-            :class="period === p.value
-              ? 'bg-[var(--color-accent-primary)] text-white'
-              : 'bg-[var(--color-bg-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'"
-          >
-            {{ p.label }}
+        <div class="flex flex-col gap-1">
+          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Range Preset</span>
+          <div class="flex rounded-lg border border-[var(--color-border-default)] overflow-hidden">
+            <button
+              v-for="p in periods"
+              :key="p.value"
+              @click="period = p.value; dateFrom = ''; dateTo = ''"
+              class="px-3 py-2 text-xs font-medium transition-colors"
+              :class="period === p.value && !dateFrom && !dateTo
+                ? 'bg-[var(--color-accent-primary)] text-white'
+                : 'bg-[var(--color-bg-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'"
+            >
+              {{ p.label }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Custom Date Range -->
+        <div class="flex items-center gap-4 bg-[var(--color-bg-elevated)] p-2 rounded-xl border border-[var(--color-border-default)]">
+          <div class="flex flex-col gap-0.5">
+            <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Start Date</span>
+            <input v-model="dateFrom" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-xs font-bold focus:ring-0 w-24 p-0" />
+          </div>
+          <div class="w-px h-8 bg-[var(--color-border-default)]"></div>
+          <div class="flex flex-col gap-0.5">
+            <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">End Date</span>
+            <input v-model="dateTo" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-xs font-bold focus:ring-0 w-24 p-0" />
+          </div>
+          <button @click="loadChart" class="p-2 rounded-lg bg-[var(--color-accent-primary)] text-white hover:bg-[var(--color-accent-hover)] transition-all">
+            <RefreshCw :size="14" />
           </button>
         </div>
       </div>

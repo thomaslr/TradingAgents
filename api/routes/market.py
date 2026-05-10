@@ -1,18 +1,23 @@
 from fastapi import APIRouter, HTTPException, Query
 import yfinance as yf
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 router = APIRouter(prefix="/market", tags=["Market Data"])
 
 @router.get("/ohlc/{ticker}")
 def get_ohlc_data(
     ticker: str,
-    period: str = Query("1y", description="Time period (e.g., 1mo, 6mo, 1y, 5y)"),
+    period: Optional[str] = Query("1y", description="Time period (e.g., 1mo, 6mo, 1y, 5y)"),
+    start: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     interval: str = Query("1d", description="Time interval (e.g., 1d, 1wk)")
 ):
     """Fetch OHLC data for lightweight charts."""
     try:
-        data = yf.download(ticker, period=period, interval=interval, progress=False)
+        if start and end:
+            data = yf.download(ticker, start=start, end=end, interval=interval, progress=False)
+        else:
+            data = yf.download(ticker, period=period, interval=interval, progress=False)
         if data.empty:
             raise HTTPException(status_code=404, detail=f"No data found for {ticker}")
             

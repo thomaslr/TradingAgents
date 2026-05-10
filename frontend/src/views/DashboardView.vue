@@ -257,38 +257,45 @@ function formatDate(dateStr: string | null): string {
             class="w-full pl-9 pr-4 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg text-sm focus:outline-none focus:border-[var(--color-accent-primary)] transition-colors text-[var(--color-text-primary)]"
           />
         </div>
-        <div class="flex items-center gap-1 p-1 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg">
-          <button 
-            @click="() => {
-              const d = new Date();
-              d.setMonth(d.getMonth() - 6);
-              startDate = d.toISOString().split('T')[0];
-            }"
-            class="px-2 py-1 text-[10px] font-bold hover:text-white text-[var(--color-text-muted)]"
-          >6M</button>
-          <button 
-            @click="() => {
-              const d = new Date(new Date().getFullYear(), 0, 1);
-              startDate = d.toISOString().split('T')[0];
-            }"
-            class="px-2 py-1 text-[10px] font-bold hover:text-white text-[var(--color-text-muted)]"
-          >YTD</button>
-        </div>
-
-        <div class="flex items-center gap-2">
-          <input 
-            v-model="startDate"
-            type="date" 
-            class="px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg text-sm focus:outline-none focus:border-[var(--color-accent-primary)] transition-colors text-[var(--color-text-primary)]"
-            title="Start Date"
-          />
-          <span class="text-[var(--color-text-muted)]">-</span>
-          <input 
-            v-model="endDate"
-            type="date" 
-            class="px-3 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg text-sm focus:outline-none focus:border-[var(--color-accent-primary)] transition-colors text-[var(--color-text-primary)]"
-            title="End Date"
-          />
+        <!-- Unified Date Range -->
+        <div class="flex items-center gap-4 bg-[var(--color-bg-card)] p-1.5 rounded-xl border border-[var(--color-border-default)]">
+          <div class="flex items-center p-1 bg-black/20 rounded-lg">
+            <button 
+              @click="() => {
+                const d = new Date();
+                d.setMonth(d.getMonth() - 6);
+                startDate = d.toISOString().split('T')[0];
+                endDate = '';
+              }"
+              class="px-2 py-1 text-[10px] font-bold rounded transition-colors"
+              :class="startDate && !endDate ? 'bg-[var(--color-accent-primary)] text-white' : 'text-[var(--color-text-muted)] hover:text-white'"
+            >6M</button>
+            <button 
+              @click="() => {
+                const d = new Date(new Date().getFullYear(), 0, 1);
+                startDate = d.toISOString().split('T')[0];
+                endDate = '';
+              }"
+              class="px-2 py-1 text-[10px] font-bold rounded transition-colors"
+              :class="startDate && !endDate && startDate.includes('-01-01') ? 'bg-[var(--color-accent-primary)] text-white' : 'text-[var(--color-text-muted)] hover:text-white'"
+            >YTD</button>
+            <button 
+              @click="startDate = ''; endDate = ''"
+              class="px-2 py-1 text-[10px] font-bold rounded transition-colors"
+              :class="!startDate && !endDate ? 'bg-[var(--color-accent-primary)] text-white' : 'text-[var(--color-text-muted)] hover:text-white'"
+            >ALL</button>
+          </div>
+          <div class="w-px h-8 bg-[var(--color-border-default)]"></div>
+          <div class="flex items-center gap-3 px-2">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">Start Date</span>
+              <input v-model="startDate" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
+            </div>
+            <div class="flex flex-col gap-0.5">
+              <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">End Date</span>
+              <input v-model="endDate" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
+            </div>
+          </div>
         </div>
       </div>
       <div class="flex items-center gap-2">
