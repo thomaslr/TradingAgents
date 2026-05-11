@@ -9,7 +9,7 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
-    port: 5173,
+    port: 5175,
     proxy: {
       // Proxy all /api calls to FastAPI on port 6767
       '/api': {

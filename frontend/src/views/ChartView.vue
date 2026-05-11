@@ -189,7 +189,7 @@ async function loadChart() {
         .filter(r => r.rating)
         // Filter by user toggles
         .filter(r => {
-          const rating = r.rating.toLowerCase()
+          const rating = r.rating?.toLowerCase() || ''
           if (rating.includes('buy') || rating.includes('overweight')) return showBuy.value
           if (rating.includes('sell') || rating.includes('underweight')) return showSell.value
           if (rating.includes('hold')) return showHold.value

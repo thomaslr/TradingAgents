@@ -1,35 +1,30 @@
 services:
-  tradingagents:
+  app:
     build: .
-    env_file:
-      - .env
-    volumes:
-      - tradingagents_data:/home/appuser/.tradingagents
-    tty: true
-    stdin_open: true
-
-  ollama:
-    image: ollama/ollama:latest
-    volumes:
-      - ollama_data:/root/.ollama
-    profiles:
-      - ollama
-
-  tradingagents-ollama:
-    build: .
+    image: trading-agents:latest
+    container_name: trading-agents
+    restart: unless-stopped
+    ports:
+      - "7101:7101"
     env_file:
       - .env
     environment:
-      - LLM_PROVIDER=ollama
+      - API_HOST=0.0.0.0
+      - API_PORT=7101
+      - API_RELOAD=false
+      - TRADINGAGENTS_DB_PATH=/app/data/tradingagents.db
+      - TRADINGAGENTS_RESULTS_DIR=/app/data/logs
+      - TRADINGAGENTS_CACHE_DIR=/app/data/cache
+      - TRADINGAGENTS_MEMORY_LOG_PATH=/app/data/memory/trading_memory.md
     volumes:
-      - tradingagents_data:/home/appuser/.tradingagents
-    depends_on:
-      - ollama
-    tty: true
-    stdin_open: true
-    profiles:
-      - ollama
+      - trading_data:/app/data
+    networks:
+      - trading-network
 
 volumes:
-  tradingagents_data:
-  ollama_data:
+  trading_data:
+    # Docker will create and manage this volume on the host (Windows or Linux)
+
+networks:
+  trading-network:
+    driver: bridge

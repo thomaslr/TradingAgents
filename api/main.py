@@ -7,6 +7,8 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 # Configure logging at the very top so all modules inherit the settings
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -39,6 +41,8 @@ app.include_router(market.router, prefix="/api")
 app.include_router(analysis.router, prefix="/api")
 app.include_router(schedule.router, prefix="/api")
 app.include_router(memory.router, prefix="/api")
+
+
 
 async def scheduler_loop():
     """Background task to poll for scheduled jobs."""
@@ -123,7 +127,25 @@ async def get_ollama_tags():
         logging.error(f"Failed to fetch Ollama tags: {e}")
         return []
 
+# Serve static files from the frontend/dist directory
+# This allows a single container to serve both the API and the UI
+# Place this AFTER all API routes to avoid intercepting them
+dist_path = Path("frontend/dist")
+if dist_path.exists():
+    app.mount("/", StaticFiles(directory=str(dist_path), html=True), name="frontend")
+    
+    @app.exception_handler(404)
+    async def not_found_handler(request, exc):
+        # For SPA (Single Page Application) routing support:
+        # If a path isn't found in the API or StaticFiles, serve index.html
+        return FileResponse(dist_path / "index.html")
+else:
+    logging.warning("Frontend dist directory not found. UI will not be served.")
+
 if __name__ == "__main__":
-    # Migrated to 7101 to avoid stale processes on 7100
-    uvicorn.run("api.main:app", host="127.0.0.1", port=7101, reload=True)
+    host = os.getenv("API_HOST", "127.0.0.1")
+    port = int(os.getenv("API_PORT", 7101))
+    reload = os.getenv("API_RELOAD", "true").lower() == "true"
+    
+    uvicorn.run("api.main:app", host=host, port=port, reload=reload)
 

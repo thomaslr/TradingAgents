@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchReportList, fetchReportContent, fetchRuns, fetchTickers, type Run } from '../api/client'
 import { marked } from 'marked'

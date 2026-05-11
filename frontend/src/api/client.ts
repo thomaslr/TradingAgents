@@ -122,7 +122,7 @@ export async function stopAnalysis() {
   return data
 }
 
-export async function fetchAnalysisStatus(): Promise<{ running: boolean, job: any }> {
+export async function fetchAnalysisStatus(): Promise<{ running: boolean, job: any, last_error?: string | null }> {
   const { data } = await api.get('/analysis/status')
   return data
 }
@@ -185,6 +185,10 @@ export interface MemoryEntry {
   holding: string | null
   decision: string
   reflection: string
+  quick_model?: string
+  deep_model?: string
+  depth?: string
+  runtime_sec?: string
 }
 
 export async function fetchMemoryEntries(): Promise<MemoryEntry[]> {

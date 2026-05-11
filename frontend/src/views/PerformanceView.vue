@@ -40,7 +40,6 @@ watch(selectedDeepModel, (v) => localStorage.setItem('perf_deep_model', v))
 watch(selectedDepth, (v) => localStorage.setItem('perf_depth', v))
 
 const expandedRows = ref<Set<string>>(new Set())
-const expandedReports = ref<Record<string, any>>({})
 
 
 
@@ -439,12 +438,7 @@ function toggleRow(id: string) {
   else expandedRows.value.add(id)
 }
 
-function getRatingClass(rating: string) {
-  const r = rating.toLowerCase()
-  if (r.includes('buy') || r.includes('overweight')) return 'text-green-400 border-green-400/20'
-  if (r.includes('sell') || r.includes('underweight')) return 'text-red-400 border-red-400/20'
-  return 'text-amber-400 border-amber-400/20'
-}
+
 
 function getSignalLabel(text: string) {
   const t = text.toLowerCase()

@@ -41,6 +41,7 @@ const currentJobParams = ref<string>('')
 const activeConfig = ref<any>(null)
 const isProcessingQueue = ref(false)
 let statusPolling: any = null
+const launchWatchdog = ref(0)
 
 // Form State
 const tickersInput = ref(localStorage.getItem('trading_tickers') || '')
@@ -106,16 +107,15 @@ async function checkStatus() {
         // Safety watchdog: if we're "launching" but backend is idle, 
         // give it a few polls then error out.
         if (isProcessingQueue.value) {
-          if (!window._launchWatchdog) window._launchWatchdog = 0
-          window._launchWatchdog++
-          if (window._launchWatchdog > 4) { // ~12 seconds
+          launchWatchdog.value++
+          if (launchWatchdog.value > 4) { // ~12 seconds
             error.value = status.last_error ? `Launch Failed: ${status.last_error}` : 'Launch Timeout: The backend did not start the job.'
             isProcessingQueue.value = false
             isQueueRunning.value = false
-            window._launchWatchdog = 0
+            launchWatchdog.value = 0
           }
         } else {
-          window._launchWatchdog = 0
+          launchWatchdog.value = 0
         }
 
         if (status.last_error && isProcessingQueue.value) {
