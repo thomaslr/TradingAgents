@@ -39,6 +39,7 @@ const successMessage = ref('')
 const isRunning = ref(false)
 const currentJobParams = ref<string>('')
 const activeConfig = ref<any>(null)
+const activeJobMessage = ref<string | null>(null)
 const isProcessingQueue = ref(false)
 let statusPolling: any = null
 const launchWatchdog = ref(0)
@@ -93,6 +94,7 @@ async function checkStatus() {
     if (status.running && status.job) {
       isProcessingQueue.value = false // We've confirmed it's running
       activeConfig.value = status.job.config
+      activeJobMessage.value = status.job.status_message
       const tickers = status.job.tickers.join(', ')
       const current = status.job.current_ticker 
         ? `Analyzing: ${status.job.current_ticker} (${status.job.current_date})` 
@@ -448,9 +450,15 @@ function formatDate(dateStr: string | null): string {
             {{ activeConfig?.deep_model || deepModel }}
           </div>
           <div class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
-            <span class="opacity-40 text-white">DEBATE DEPTH</span>
+            <span class="opacity-40 text-white">DEPTH</span>
             {{ activeConfig?.debate_depth || depth }}
           </div>
+        </div>
+
+        <!-- Network / WOL Status -->
+        <div v-if="activeJobMessage" class="w-full mt-3 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-500 text-[10px] font-bold flex items-center gap-3 animate-pulse z-10 shadow-lg">
+          <div class="w-2 h-2 rounded-full bg-amber-500"></div>
+          <span class="uppercase tracking-widest">{{ activeJobMessage }}</span>
         </div>
       </div>
       

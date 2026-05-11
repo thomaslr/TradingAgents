@@ -22,7 +22,8 @@ class AnalysisTaskState:
     """Manages the lifecycle and cancellation of background analysis jobs."""
     def __init__(self):
         self.active_job: Optional[Dict[str, Any]] = None
-        self.last_error: Optional[str] = None
+        self.last_error = None
+        self.status_message: Optional[str] = None
         self.abort_event = threading.Event()
         self.lock = threading.Lock()
 
@@ -39,7 +40,8 @@ class AnalysisTaskState:
                     "quick_model": config.get("quick_think_llm"),
                     "deep_model": config.get("deep_think_llm"),
                     "debate_depth": config.get("max_debate_rounds")
-                }
+                },
+                "status_message": None
             }
 
     def set_error(self, error: str):
@@ -97,6 +99,34 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
         if request.quick_think_llm: config["quick_think_llm"] = request.quick_think_llm
         if request.deep_think_llm: config["deep_think_llm"] = request.deep_think_llm
         if request.max_debate_rounds is not None: config["max_debate_rounds"] = request.max_debate_rounds
+        
+        # --- SMART WAKE LOGIC ---
+        if config.get("llm_provider") == "ollama":
+            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+            mac_address = os.getenv("OLLAMA_MAC_ADDRESS")
+            wake_timeout = int(os.getenv("OLLAMA_WAKE_TIMEOUT", "60"))
+            
+            def set_status(msg: str):
+                with task_state.lock:
+                    if task_state.active_job:
+                        task_state.active_job["status_message"] = msg
+            
+            from api.utils.network import ensure_ollama_ready
+            import asyncio
+            
+            # Since we are in a background thread, we need a way to run the async check
+            # We can use a temporary event loop or just run it synchronously if needed.
+            # But httpx.AsyncClient needs a loop.
+            ready = asyncio.run(ensure_ollama_ready(ollama_url, mac_address, wake_timeout, set_status))
+            
+            if not ready:
+                # If we can't reach it and wake failed, we should probably fail here
+                # rather than letting the agents timeout individually.
+                raise Exception(f"Ollama server at {ollama_url} is unreachable.")
+            
+            # Clear the waking status once ready
+            set_status(None)
+        # ------------------------
 
         from cli.batch_runner import _expand_dates
         expanded_dates = request.dates
