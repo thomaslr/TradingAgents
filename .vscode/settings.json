@@ -18,5 +18,6 @@
         "titleBar.inactiveBackground": "#ce4b1899",
         "titleBar.inactiveForeground": "#e7e7e799"
     },
-    "peacock.color": "#ce4b18"
+    "peacock.color": "#ce4b18",
+    "python.defaultInterpreterPath": ".\\.venv\\Scripts\\python.exe"
 }
