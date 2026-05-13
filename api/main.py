@@ -44,6 +44,12 @@ app.include_router(memory.router, prefix="/api")
 
 
 
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(scheduler_loop())
+
+from api.utils.network import ensure_ollama_ready
+
 async def scheduler_loop():
     """Background task to poll for scheduled jobs."""
     while True:
@@ -65,11 +71,22 @@ async def scheduler_loop():
                 # We use today's date for scheduled runs
                 today = datetime.now().strftime("%Y-%m-%d")
                 
+                # SMART WAKE: If the job uses Ollama, wake the server first
+                if job.get("config", {}).get("llm_provider") == "ollama":
+                    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+                    mac_address = os.getenv("OLLAMA_MAC_ADDRESS")
+                    wake_timeout = int(os.getenv("OLLAMA_WAKE_TIMEOUT", "60"))
+                    
+                    logging.info(f"Scheduled job requires Ollama. Ensuring server is ready...")
+                    await ensure_ollama_ready(ollama_url, mac_address, wake_timeout)
+
                 # We need a new registry per job
+                from tradingagents.db.registry import RunRegistry
                 registry = RunRegistry(db_path)
                 try:
                     # To address duplicate runs for the same ticker/date, 
                     # we use force=True to ensure it overwrites.
+                    from cli.batch_runner import run_batch_analysis
                     await asyncio.to_thread(
                         run_batch_analysis,
                         tickers=job["tickers"],
@@ -87,10 +104,6 @@ async def scheduler_loop():
             logging.error(f"Error in scheduler loop: {e}")
             
         await asyncio.sleep(60)
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(scheduler_loop())
 
 @app.get("/api/health")
 def health_check():
@@ -111,6 +124,14 @@ async def get_ollama_tags():
     """Fetch available models from local Ollama server."""
     # Try to resolve Ollama URL from .env, fallback to default
     ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    mac_address = os.getenv("OLLAMA_MAC_ADDRESS")
+    
+    # SMART WAKE: Try to wake the server first (with a shorter "interactive" timeout)
+    if mac_address:
+        # We use a 15s timeout here so the UI doesn't hang too long
+        # but gives the server a chance to wake.
+        await ensure_ollama_ready(ollama_url, mac_address, timeout=15)
+    
     # Convert /v1/chat or /v1 to base /api/tags for model listing
     base_url = ollama_url.split("/v1")[0]
     tags_url = f"{base_url}/api/tags"

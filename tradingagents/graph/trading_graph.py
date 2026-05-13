@@ -226,6 +226,32 @@ class TradingAgentsGraph:
             )
             return None, None, None
 
+    def _sync_outcomes_to_db(self, updates: List[dict]) -> None:
+        """Write resolved outcome data into the runs DB table.
+
+        This keeps the DB in sync with the memory log so the performance
+        dashboard can query outcomes from SQLite instead of parsing markdown.
+        """
+        from tradingagents.db.registry import RunRegistry
+        try:
+            registry = RunRegistry(self.config["db_path"])
+            for upd in updates:
+                registry.mark_outcome_by_key(
+                    ticker=upd["ticker"],
+                    trade_date=upd["trade_date"],
+                    provider=self.config.get("llm_provider", "unknown"),
+                    quick_model=self.config.get("quick_think_llm", "unknown"),
+                    deep_model=self.config.get("deep_think_llm", "unknown"),
+                    depth=self.config.get("max_debate_rounds", 1),
+                    raw_return=upd["raw_return"],
+                    alpha_return=upd["alpha_return"],
+                    holding_days=upd["holding_days"],
+                    reflection=upd["reflection"],
+                )
+            registry.close()
+        except Exception as e:
+            logger.warning("Failed to sync outcomes to DB: %s", e)
+
     def _resolve_pending_entries(self, ticker: str) -> None:
         """Resolve pending log entries for ticker at the start of a new run.
 
@@ -261,6 +287,8 @@ class TradingAgentsGraph:
 
         if updates:
             self.memory_log.batch_update_with_outcomes(updates)
+            # Also write outcomes to the runs DB for the performance dashboard
+            self._sync_outcomes_to_db(updates)
 
     def propagate(self, company_name, trade_date):
         """Run the trading agents graph for a company on a specific date.

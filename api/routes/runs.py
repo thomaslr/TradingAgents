@@ -75,3 +75,31 @@ def delete_run(run_id: int, registry: RunRegistry = Depends(get_registry)):
         return {"status": "success", "message": f"Run {run_id} deleted."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/configs", response_model=List[Dict[str, Any]])
+def list_configs(registry: RunRegistry = Depends(get_registry)):
+    """List all simulation configurations with their labels and colors."""
+    return registry.list_configs()
+
+@router.get("/performance", response_model=List[Dict[str, Any]])
+def get_performance_data(
+    ticker: Optional[str] = Query(None, description="Filter by ticker"),
+    config_id: Optional[str] = Query(None, description="Filter by simulation config"),
+    date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    limit: int = Query(5000, description="Max number of runs to return"),
+    registry: RunRegistry = Depends(get_registry),
+):
+    """Get runs with resolved outcomes for the performance dashboard.
+    
+    Returns only runs where outcome_status = 'resolved', joined with 
+    simulation config label and color for chart rendering.
+    """
+    return registry.list_runs_for_performance(
+        ticker=ticker,
+        config_id=config_id,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+

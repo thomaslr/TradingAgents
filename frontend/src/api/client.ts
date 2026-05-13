@@ -189,6 +189,7 @@ export interface MemoryEntry {
   deep_model?: string
   depth?: string
   runtime_sec?: string
+  config_id?: string
 }
 
 export async function fetchMemoryEntries(): Promise<MemoryEntry[]> {
@@ -201,4 +202,53 @@ export async function clearMemoryEntries(): Promise<void> {
   await api.delete('/memory')
 }
 
+// ── Simulation Configs ──────────────────────────────────
+export interface SimulationConfig {
+  config_id: string
+  provider: string
+  quick_model: string
+  deep_model: string
+  depth: number
+  label: string
+  color: string
+  created_at: string
+}
 
+export async function fetchConfigs(): Promise<SimulationConfig[]> {
+  const { data } = await api.get<SimulationConfig[]>('/runs/configs')
+  return data
+}
+
+// ── Performance Data (DB-backed) ────────────────────────
+export interface PerformanceEntry {
+  id: number
+  ticker: string
+  trade_date: string
+  provider: string
+  quick_model: string
+  deep_model: string
+  depth: number
+  rating: string | null
+  action: string | null
+  entry_price: number | null
+  close_price: number | null
+  config_id: string
+  config_label: string
+  config_color: string
+  raw_return: number
+  alpha_return: number
+  holding_days: number
+  reflection: string | null
+  runtime_sec: number | null
+  outcome_status: string
+}
+
+export async function fetchPerformanceData(params?: {
+  ticker?: string
+  config_id?: string
+  date_from?: string
+  date_to?: string
+}): Promise<PerformanceEntry[]> {
+  const { data } = await api.get<PerformanceEntry[]>('/runs/performance', { params })
+  return data
+}

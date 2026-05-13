@@ -1,13 +1,40 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
-import { fetchMemoryEntries, clearMemoryEntries, fetchTickers, type MemoryEntry } from '../api/client'
+import { fetchPerformanceData, fetchConfigs, clearMemoryEntries, fetchTickers, type PerformanceEntry, type SimulationConfig, type MemoryEntry } from '../api/client'
 import { createChart, ColorType, LineSeries } from 'lightweight-charts'
 import { Trophy, RefreshCw, Info, Filter, BarChart3, Trash2 } from 'lucide-vue-next'
 
 const loading = ref(true)
-const entries = ref<MemoryEntry[]>([])
+const rawDbEntries = ref<PerformanceEntry[]>([])
+const configs = ref<SimulationConfig[]>([])
+const enabledConfigs = ref<Set<string>>(new Set())
 const chartContainer = ref<HTMLDivElement>()
+let chart: any = null
+let benchmarkSeries: any = null
+let strategySeriesMap = new Map<string, any>()
 const registryTickers = ref<{ticker: string, name: string}[]>([])
+
+// Adapt DB entries to the MemoryEntry shape
+const entries = computed<MemoryEntry[]>(() => {
+  return rawDbEntries.value
+    .map(e => ({
+      date: e.trade_date,
+      ticker: e.ticker,
+      rating: e.rating || 'Hold',
+      pending: false,
+      raw: e.raw_return != null ? `${(e.raw_return * 100).toFixed(1)}%` : null,
+      alpha: e.alpha_return != null ? `${(e.alpha_return * 100).toFixed(1)}%` : null,
+      holding: e.holding_days != null ? `${e.holding_days}d` : null,
+      decision: e.action || '',
+      reflection: e.reflection || '',
+      quick_model: e.quick_model,
+      deep_model: e.deep_model,
+      depth: String(e.depth),
+      runtime_sec: e.runtime_sec != null ? String(e.runtime_sec) : '0',
+      config_id: e.config_id,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date))
+})
 
 // Filters
 const showCosts = ref(false)
@@ -23,10 +50,6 @@ const dateTo = ref(localStorage.getItem('perf_to') || '')
 // Visible Chart Range (for dynamic stats)
 const visibleTimeRange = ref<{ from: string; to: string } | null>(null)
 
-// Research Mode Filters
-const selectedQuickModel = ref(localStorage.getItem('perf_quick_model') || 'ALL')
-const selectedDeepModel = ref(localStorage.getItem('perf_deep_model') || 'ALL')
-const selectedDepth = ref(localStorage.getItem('perf_depth') || 'ALL')
 
 // Persist Filters
 watch(selectedTicker, (v) => localStorage.setItem('perf_ticker', v))
@@ -35,23 +58,18 @@ watch(strategySource, (v) => localStorage.setItem('perf_source', v))
 watch(timeRange, (v) => localStorage.setItem('perf_range', v))
 watch(dateFrom, (v) => localStorage.setItem('perf_from', v))
 watch(dateTo, (v) => localStorage.setItem('perf_to', v))
-watch(selectedQuickModel, (v) => localStorage.setItem('perf_quick_model', v))
-watch(selectedDeepModel, (v) => localStorage.setItem('perf_deep_model', v))
-watch(selectedDepth, (v) => localStorage.setItem('perf_depth', v))
+
 
 const expandedRows = ref<Set<string>>(new Set())
 
 
 
 
-let chart: any = null
-let strategySeries: any = null
-let benchmarkSeries: any = null
-
 onMounted(async () => {
   await Promise.all([
     loadData(),
-    loadRegistryTickers()
+    loadRegistryTickers(),
+    loadConfigs()
   ])
   initChart()
 })
@@ -64,14 +82,27 @@ async function loadRegistryTickers() {
   }
 }
 
+async function loadConfigs() {
+  try {
+    configs.value = await fetchConfigs()
+    // Enable all configs by default
+    enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
+  } catch (e) {
+    console.error('Failed to load configs', e)
+  }
+}
+
+function toggleConfig(configId: string) {
+  const s = new Set(enabledConfigs.value)
+  if (s.has(configId)) s.delete(configId)
+  else s.add(configId)
+  enabledConfigs.value = s
+}
+
 async function loadData() {
   loading.value = true
   try {
-    const rawEntries = await fetchMemoryEntries()
-    // Sort by date initially
-    entries.value = rawEntries
-      .filter(e => !e.pending && e.raw)
-      .sort((a, b) => a.date.localeCompare(b.date))
+    rawDbEntries.value = await fetchPerformanceData()
   } catch (e) {
     console.error('Failed to load performance data', e)
   } finally {
@@ -87,7 +118,7 @@ async function handleClearMemory() {
   loading.value = true
   try {
     await clearMemoryEntries()
-    entries.value = []
+    rawDbEntries.value = []
   } catch (e) {
     console.error('Failed to clear memory', e)
     alert('Failed to clear memory log.')
@@ -98,9 +129,9 @@ async function handleClearMemory() {
 
 
 const availableTickers = computed(() => {
-  const memoryTickers = entries.value.map(e => e.ticker)
+  const dbTickers = rawDbEntries.value.map(e => e.ticker)
   const regTickers = registryTickers.value.map(t => t.ticker)
-  const all = new Set([...memoryTickers, ...regTickers])
+  const all = new Set([...dbTickers, ...regTickers])
   return ['ALL', ...Array.from(all).sort()]
 })
 
@@ -136,16 +167,7 @@ const filteredEntries = computed(() => {
     result = result.filter(e => e.date >= cutoffStr)
   }
 
-  // Research Mode Filters
-  if (selectedQuickModel.value !== 'ALL') {
-    result = result.filter(e => e.quick_model === selectedQuickModel.value)
-  }
-  if (selectedDeepModel.value !== 'ALL') {
-    result = result.filter(e => e.deep_model === selectedDeepModel.value)
-  }
-  if (selectedDepth.value !== 'ALL') {
-    result = result.filter(e => String(e.depth) === selectedDepth.value)
-  }
+
   
   return result
 })
@@ -173,175 +195,157 @@ const visibleEntries = computed(() => {
   )
 })
 
-const stats = computed(() => {
-  if (visibleEntries.value.length === 0) return { totalRaw: 0, totalAlpha: 0, winRate: 0, count: 0, totalRuntime: 0, stratROI: 0, benchROI: 0 }
+const multiConfigStats = computed(() => {
+  if (visibleEntries.value.length === 0 || configs.value.length === 0) return []
   
-  const wins = visibleEntries.value.filter(e => {
-    // We need to determine if it was a win based on the strategy logic for THAT entry
-    const signal = strategySource.value === 'RATING' ? e.rating : e.decision
-    const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
-    const stratRet = isLong ? parsePct(e.raw) : 0
-    
-    const raw = parsePct(e.raw)
-    const alpha = parsePct(e.alpha)
-    const benchRet = benchmarkType.value === 'SPY' ? (raw - alpha) : raw
-    
-    return stratRet > benchRet
-  }).length
-  
-  // Calculate dynamic ROI/Alpha based on the visible points
-  // We need to recalculate ROI starting from the first visible date
-  let strat = 100
-  let bench = 100
-  
-  const dateGroups = new Map<string, MemoryEntry[]>()
-  visibleEntries.value.forEach(e => {
-    if (!dateGroups.has(e.date)) dateGroups.set(e.date, [])
-    dateGroups.get(e.date)!.push(e)
-  })
+  // Use either selected configs or all configs if none selected
+  const targetConfigs = enabledConfigs.value.size > 0 
+    ? configs.value.filter(c => enabledConfigs.value.has(c.config_id))
+    : configs.value
 
-  const sortedDates = Array.from(dateGroups.keys()).sort()
-  const tickerStates = new Map<string, boolean>()
+  return targetConfigs
+    .filter(config => visibleEntries.value.some(e => e.config_id === config.config_id))
+    .map(config => {
+      const cid = config.config_id
+      const configEntries = visibleEntries.value.filter(e => e.config_id === cid)
+      
+      const wins = configEntries.filter(e => {
+        const signal = strategySource.value === 'RATING' ? e.rating : e.decision
+        const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
+        const stratRet = isLong ? parsePct(e.raw) : 0
+        const raw = parsePct(e.raw)
+        const alpha = parsePct(e.alpha)
+        const benchRet = benchmarkType.value === 'SPY' ? (raw - alpha) : raw
+        return stratRet > benchRet
+      }).length
 
-  sortedDates.forEach(date => {
-    const dayEntries = dateGroups.get(date)!
-    let totalStratRet = 0
-    let totalBenchRet = 0
-    
-    dayEntries.forEach(e => {
-      const raw = parsePct(e.raw)
-      const alpha = parsePct(e.alpha)
-      const spy = raw - alpha
-      const signal = strategySource.value === 'RATING' ? e.rating : e.decision
-      const rating = signal.toLowerCase()
-      
-      if (rating.includes('buy') || rating.includes('overweight')) tickerStates.set(e.ticker, true)
-      else if (rating.includes('sell') || rating.includes('underweight')) tickerStates.set(e.ticker, false)
-      
-      const isLong = tickerStates.get(e.ticker) || false
-      let tickerStratRet = isLong ? raw : 0
-      if (showCosts.value && isLong) {
-        tickerStratRet -= (costModel.value === 'IBKR' ? 0.0015 : commissionPerTrade.value)
+      let strat = 100
+      let bench = 100
+      let totalRuntime = 0
+
+      const dateGroups = new Map<string, MemoryEntry[]>()
+      configEntries.forEach(e => {
+        if (!dateGroups.has(e.date)) dateGroups.set(e.date, [])
+        dateGroups.get(e.date)!.push(e)
+      })
+
+      const sortedDates = Array.from(dateGroups.keys()).sort()
+      const tickerStates = new Map<string, boolean>()
+
+      sortedDates.forEach(date => {
+        const dayEntries = dateGroups.get(date)!
+        let totalStratRet = 0
+        let totalBenchRet = 0
+        
+        dayEntries.forEach(e => {
+          const raw = parsePct(e.raw)
+          const alpha = parsePct(e.alpha)
+          const spy = raw - alpha
+          const signal = strategySource.value === 'RATING' ? e.rating : e.decision
+          const rating = signal.toLowerCase()
+          
+          if (rating.includes('buy') || rating.includes('overweight')) tickerStates.set(e.ticker, true)
+          else if (rating.includes('sell') || rating.includes('underweight')) tickerStates.set(e.ticker, false)
+          
+          const isLong = tickerStates.get(e.ticker) || false
+          let tickerStratRet = isLong ? raw : 0
+          if (showCosts.value && isLong) {
+            tickerStratRet -= (costModel.value === 'IBKR' ? 0.0015 : commissionPerTrade.value)
+          }
+          
+          const tickerBenchRet = benchmarkType.value === 'SPY' ? spy : raw
+          totalStratRet += tickerStratRet
+          totalBenchRet += tickerBenchRet
+          totalRuntime += parseFloat(e.runtime_sec || '0')
+        })
+
+        const avgStratRet = totalStratRet / dayEntries.length
+        const avgBenchRet = totalBenchRet / dayEntries.length
+        strat = strat * (1 + avgStratRet)
+        bench = bench * (1 + avgBenchRet)
+      })
+
+      return {
+        config,
+        count: configEntries.length,
+        winRate: (wins / configEntries.length) * 100,
+        totalAlpha: ((strat - bench) / 100) * 100,
+        stratROI: strat - 100,
+        benchROI: bench - 100,
+        totalRuntime
       }
-      
-      const tickerBenchRet = benchmarkType.value === 'SPY' ? spy : raw
-      totalStratRet += tickerStratRet
-      totalBenchRet += tickerBenchRet
     })
-
-    const avgStratRet = totalStratRet / dayEntries.length
-    const avgBenchRet = totalBenchRet / dayEntries.length
-    strat = strat * (1 + avgStratRet)
-    bench = bench * (1 + avgBenchRet)
-  })
-
-  const totalRuntime = visibleEntries.value.reduce((acc, e) => {
-    const r = parseFloat(e.runtime_sec || '0')
-    return acc + (isNaN(r) ? 0 : r)
-  }, 0)
-
-  return {
-    totalRaw: strat - 100,
-    totalAlpha: (strat - 100) - (bench - 100),
-    winRate: (wins / visibleEntries.value.length) * 100,
-    count: visibleEntries.value.length,
-    totalRuntime,
-    stratROI: strat - 100,
-    benchROI: bench - 100
-  }
 })
 
 
-
-const availableQuickModels = computed(() => {
-  const models = new Set(entries.value.map(e => e.quick_model).filter(Boolean))
-  return ['ALL', ...Array.from(models).sort()]
+const activeConfigs = computed(() => {
+  return configs.value.filter(c => enabledConfigs.value.size === 0 || enabledConfigs.value.has(c.config_id))
 })
-
-const availableDeepModels = computed(() => {
-  const models = new Set(entries.value.map(e => e.deep_model).filter(Boolean))
-  return ['ALL', ...Array.from(models).sort()]
-})
-
-const availableDepths = computed(() => {
-  const depths = new Set(entries.value.map(e => String(e.depth)).filter(Boolean))
-  return ['ALL', ...Array.from(depths).sort()]
-})
-
 
 
 const performanceData = computed(() => {
-  let strat = 100 
-  let bench = 100
-  
-  const stratPoints: any[] = []
-  const benchPoints: any[] = []
-  
-  if (filteredEntries.value.length === 0) return { stratPoints, benchPoints }
+  // Returns a map of config_id -> points, plus the shared benchmark
+  const targetConfigs = enabledConfigs.value.size > 0 
+    ? configs.value.filter(c => enabledConfigs.value.has(c.config_id))
+    : configs.value
 
-  // Group entries by date
-  const dateGroups = new Map<string, MemoryEntry[]>()
-  filteredEntries.value.forEach(e => {
-    if (!dateGroups.has(e.date)) dateGroups.set(e.date, [])
-    dateGroups.get(e.date)!.push(e)
-  })
+  const results: Record<string, any[]> = {}
+  let benchPoints: any[] = []
 
-  // Sort dates strictly
-  const sortedDates = Array.from(dateGroups.keys()).sort()
-  
-  // Track state per ticker to handle 'Hold' signals correctly
-  const tickerStates = new Map<string, boolean>()
-  
-  // Build points day by day
-  sortedDates.forEach(date => {
-    const dayEntries = dateGroups.get(date)!
-    
-    let totalStratRet = 0
-    let totalBenchRet = 0
-    
-    dayEntries.forEach(e => {
-      const raw = parsePct(e.raw)
-      const alpha = parsePct(e.alpha)
-      const spy = raw - alpha
-      
-      // Determine Signal Source
-      const signal = strategySource.value === 'RATING' ? e.rating : e.decision
-      const rating = signal.toLowerCase()
-      
-      if (rating.includes('buy') || rating.includes('overweight')) {
-        tickerStates.set(e.ticker, true)
-      } else if (rating.includes('sell') || rating.includes('underweight')) {
-        tickerStates.set(e.ticker, false)
-      }
-      
-      const isLong = tickerStates.get(e.ticker) || false
-      let tickerStratRet = isLong ? raw : 0
-      
-      if (showCosts.value && isLong) {
-        tickerStratRet -= (costModel.value === 'IBKR' ? 0.0015 : commissionPerTrade.value)
-      }
-      
-      const tickerBenchRet = benchmarkType.value === 'SPY' ? spy : raw
-      
-      totalStratRet += tickerStratRet
-      totalBenchRet += tickerBenchRet
+  targetConfigs.forEach(config => {
+    const cid = config.config_id
+    const configEntries = filteredEntries.value.filter(e => e.config_id === cid)
+    if (configEntries.length === 0) return
+
+    let strat = 100
+    let bench = 100
+    const stratPoints: any[] = []
+    const currentBenchPoints: any[] = []
+
+    const dateGroups = new Map<string, MemoryEntry[]>()
+    configEntries.forEach(e => {
+      if (!dateGroups.has(e.date)) dateGroups.set(e.date, [])
+      dateGroups.get(e.date)!.push(e)
     })
 
-    // Average returns for the day if multiple tickers
-    const avgStratRet = totalStratRet / dayEntries.length
-    const avgBenchRet = totalBenchRet / dayEntries.length
-    
-    strat = strat * (1 + avgStratRet)
-    bench = bench * (1 + avgBenchRet)
-    
-    // Only push if we have valid numbers
-    if (!isNaN(strat) && !isNaN(bench)) {
+    const sortedDates = Array.from(dateGroups.keys()).sort()
+    const tickerStates = new Map<string, boolean>()
+
+    sortedDates.forEach(date => {
+      const dayEntries = dateGroups.get(date)!
+      let totalStratRet = 0
+      let totalBenchRet = 0
+      
+      dayEntries.forEach(e => {
+        const raw = parsePct(e.raw)
+        const alpha = parsePct(e.alpha)
+        const spy = raw - alpha
+        const signal = strategySource.value === 'RATING' ? e.rating : e.decision
+        const rating = signal.toLowerCase()
+        
+        if (rating.includes('buy') || rating.includes('overweight')) tickerStates.set(e.ticker, true)
+        else if (rating.includes('sell') || rating.includes('underweight')) tickerStates.set(e.ticker, false)
+        
+        const isLong = tickerStates.get(e.ticker) || false
+        let tickerStratRet = isLong ? raw : 0
+        if (showCosts.value && isLong) tickerStratRet -= (costModel.value === 'IBKR' ? 0.0015 : commissionPerTrade.value)
+        
+        const tickerBenchRet = benchmarkType.value === 'SPY' ? spy : raw
+        totalStratRet += tickerStratRet
+        totalBenchRet += tickerBenchRet
+      })
+
+      strat = strat * (1 + (totalStratRet / dayEntries.length))
+      bench = bench * (1 + (totalBenchRet / dayEntries.length))
       stratPoints.push({ time: date, value: strat })
-      benchPoints.push({ time: date, value: bench })
-    }
+      currentBenchPoints.push({ time: date, value: bench })
+    })
+    
+    results[cid] = stratPoints
+    if (benchPoints.length === 0) benchPoints = currentBenchPoints
   })
-  
-  return { stratPoints, benchPoints }
+
+  return { stratMaps: results, benchPoints }
 })
 
 
@@ -370,12 +374,7 @@ function initChart() {
     handleScale: true,
   })
 
-  strategySeries = chart.addSeries(LineSeries, {
-    color: '#10b981',
-    lineWidth: 3,
-    title: 'Strategy',
-  })
-
+  // Benchmark is always added once
   benchmarkSeries = chart.addSeries(LineSeries, {
     color: '#6366f1',
     lineWidth: 2,
@@ -414,20 +413,40 @@ function initChart() {
 
 
 function updateChart() {
-  if (!strategySeries || !benchmarkSeries || !chart) return
+  if (!chart || !benchmarkSeries) return
   
-  const stratData = performanceData.value.stratPoints
-  const benchData = performanceData.value.benchPoints
+  // Clear old strategy series
+  strategySeriesMap.forEach(s => chart.removeSeries(s))
+  strategySeriesMap.clear()
+
+  const { stratMaps, benchPoints } = performanceData.value
   
-  if (stratData.length > 0) {
-    strategySeries.setData(stratData)
-    benchmarkSeries.setData(benchData)
+  // Set Benchmark
+  if (benchPoints.length > 0) {
+    benchmarkSeries.setData(benchPoints)
+  }
+
+  // Add a series for each config
+  Object.entries(stratMaps).forEach(([cid, data]) => {
+    const config = configs.value.find(c => c.config_id === cid)
+    if (!config) return
+
+    const series = chart.addSeries(LineSeries, {
+      color: config.color,
+      lineWidth: 3,
+      title: config.label,
+    })
+    series.setData(data)
+    strategySeriesMap.set(cid, series)
+  })
+
+  if (benchPoints.length > 0) {
     chart.timeScale().fitContent()
   }
 }
 
 
-watch([showCosts, performanceData, benchmarkType, strategySource, costModel, timeRange], () => {
+watch([showCosts, performanceData, benchmarkType, strategySource, costModel, timeRange, enabledConfigs], () => {
   updateChart()
 })
 
@@ -449,6 +468,24 @@ function getSignalLabel(text: string) {
   return 'HOLD'
 }
 
+function getEntryStratRet(entry: MemoryEntry) {
+  const signal = strategySource.value === 'RATING' ? entry.rating : entry.decision
+  const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
+  return isLong ? parsePct(entry.raw) : 0
+}
+
+function getEntryBenchRet(entry: MemoryEntry) {
+  const raw = parsePct(entry.raw)
+  const alpha = parsePct(entry.alpha)
+  return benchmarkType.value === 'SPY' ? (raw - alpha) : raw
+}
+
+function getEntryAlpha(entry: MemoryEntry) {
+  return getEntryStratRet(entry) - getEntryBenchRet(entry)
+}
+
+const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
+
 </script>
 
 <template>
@@ -465,162 +502,190 @@ function getSignalLabel(text: string) {
         </p>
       </div>
       
-      <div class="flex flex-wrap items-center gap-3">
-        <!-- Ticker Filter -->
-        <div class="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
-          <Filter :size="14" class="text-[var(--color-text-muted)]" />
-          <select v-model="selectedTicker" class="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer">
-            <option v-for="t in availableTickers" :key="t" :value="t">{{ t }}</option>
-          </select>
+      <div class="flex flex-col items-end gap-3">
+        <!-- Row 1: Primary Filters -->
+        <div class="flex flex-wrap items-center justify-end gap-3">
+          <!-- Ticker Filter -->
+          <div class="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
+            <Filter :size="14" class="text-[var(--color-text-muted)]" />
+            <select v-model="selectedTicker" class="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer">
+              <option v-for="t in availableTickers" :key="t" :value="t">{{ t }}</option>
+            </select>
+          </div>
+
+          <!-- Time Range -->
+          <div class="flex items-center gap-4 bg-[var(--color-bg-elevated)] p-1.5 rounded-xl border border-[var(--color-border-default)]">
+            <div class="flex items-center p-1 bg-black/20 rounded-lg">
+              <button 
+                v-for="range in TIME_RANGES" 
+                :key="range"
+                @click="timeRange = range; dateFrom = ''; dateTo = ''"
+                class="px-2 py-1 text-[10px] font-bold rounded transition-colors"
+                :class="timeRange === range ? 'bg-[var(--color-accent-primary)] text-white' : 'text-[var(--color-text-muted)] hover:text-white'"
+              >
+                {{ range }}
+              </button>
+            </div>
+            <div class="w-px h-8 bg-[var(--color-border-default)]"></div>
+            <div class="flex items-center gap-3 px-2">
+              <div class="flex flex-col gap-0.5">
+                <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">Start Date</span>
+                <input v-model="dateFrom" @input="timeRange = 'CUSTOM'" @blur="dateFrom = padDate(dateFrom)" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
+              </div>
+              <div class="flex flex-col gap-0.5">
+                <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">End Date</span>
+                <input v-model="dateTo" @input="timeRange = 'CUSTOM'" @blur="dateTo = padDate(dateTo)" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- Time Range -->
-        <div class="flex items-center gap-4 bg-[var(--color-bg-elevated)] p-1.5 rounded-xl border border-[var(--color-border-default)]">
-          <div class="flex items-center p-1 bg-black/20 rounded-lg">
+        <!-- Row 2: Strategy & Benchmark -->
+        <div class="flex flex-wrap items-center justify-end gap-3">
+          <!-- Benchmark Toggle -->
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center gap-1.5 ml-1">
+              <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)]">Benchmark</span>
+              <div class="group relative">
+                <Info :size="10" class="text-[var(--color-text-muted)] cursor-help hover:text-[var(--color-text-primary)] transition-colors" />
+                <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg text-[10px] text-[var(--color-text-primary)] opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-2xl backdrop-blur-md">
+                  Compare against holding the asset itself, or against the S&P 500 index.
+                </div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
+              <BarChart3 :size="14" class="text-[var(--color-text-muted)]" />
+              <select v-model="benchmarkType" class="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer">
+                <option value="SPY">S&P 500 (SPY)</option>
+                <option value="ASSET">Buy & Hold (Asset)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Strategy Source -->
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center gap-1.5 ml-1">
+              <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)]">AI Signal Source</span>
+              <div class="group relative">
+                <Info :size="10" class="text-[var(--color-text-muted)] cursor-help hover:text-[var(--color-text-primary)] transition-colors" />
+                <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg text-[10px] text-[var(--color-text-primary)] opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-2xl backdrop-blur-md">
+                  <strong>Expert Ratings:</strong> Raw consensus of all AI analysts.<br>
+                  <strong>Final Actions:</strong> The Portfolio Manager's definitive decision.
+                </div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
+              <Info :size="14" class="text-[var(--color-text-muted)]" />
+              <select v-model="strategySource" class="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer">
+                <option value="RATING">Expert Ratings</option>
+                <option value="ACTION">Final Actions (PM)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Cost Simulation -->
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center gap-1.5 ml-1">
+              <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)]">Trade Costs</span>
+              <div class="group relative">
+                <Info :size="10" class="text-[var(--color-text-muted)] cursor-help hover:text-[var(--color-text-primary)] transition-colors" />
+                <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg text-[10px] text-[var(--color-text-primary)] opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-2xl backdrop-blur-md">
+                  Simulate realistic trading fees and market slippage for each action.
+                </div>
+              </div>
+            </div>
+            <div class="flex items-center gap-3 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
+              <select v-if="showCosts" v-model="costModel" class="bg-transparent border-none text-[10px] font-bold focus:ring-0 cursor-pointer p-0 mr-1">
+                <option value="FLAT">0.1% Flat</option>
+                <option value="IBKR">IBKR Tiered</option>
+              </select>
+              <button 
+                @click="showCosts = !showCosts"
+                class="relative inline-flex h-4 w-7 items-center rounded-full transition-colors focus:outline-none"
+                :class="showCosts ? 'bg-[var(--color-accent-primary)]' : 'bg-gray-700'"
+              >
+                <span 
+                  class="inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform"
+                  :class="showCosts ? 'translate-x-3.5' : 'translate-x-1'"
+                />
+              </button>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 mt-auto pb-0.5">
+            <button @click="loadData" class="p-2 rounded-lg bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-card)] border border-[var(--color-border-default)] transition-colors">
+              <RefreshCw :size="18" :class="{ 'animate-spin': loading }" />
+            </button>
             <button 
-              v-for="range in (['1M', '3M', '6M', 'YTD', 'ALL'] as const)" 
-              :key="range"
-              @click="timeRange = range; dateFrom = ''; dateTo = ''"
-              class="px-2 py-1 text-[10px] font-bold rounded transition-colors"
-              :class="timeRange === range ? 'bg-[var(--color-accent-primary)] text-white' : 'text-[var(--color-text-muted)] hover:text-white'"
+              @click="handleClearMemory" 
+              class="p-2 rounded-lg bg-[var(--color-bg-elevated)] hover:bg-red-500/20 text-[var(--color-text-muted)] hover:text-red-400 border border-[var(--color-border-default)] transition-colors"
+              title="Clear History"
             >
-              {{ range }}
+              <Trash2 :size="18" />
             </button>
           </div>
-          <div class="w-px h-8 bg-[var(--color-border-default)]"></div>
-          <div class="flex items-center gap-3 px-2">
-            <div class="flex flex-col gap-0.5">
-              <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">Start Date</span>
-              <input v-model="dateFrom" @input="timeRange = 'CUSTOM'" @blur="dateFrom = padDate(dateFrom)" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
-            </div>
-            <div class="flex flex-col gap-0.5">
-              <span class="text-[9px] uppercase font-black text-[var(--color-text-muted)]">End Date</span>
-              <input v-model="dateTo" @input="timeRange = 'CUSTOM'" @blur="dateTo = padDate(dateTo)" type="text" placeholder="YYYY-MM-DD" class="bg-transparent border-none text-[11px] font-bold focus:ring-0 w-24 p-0" />
-            </div>
-          </div>
-        </div>
-
-        <!-- Benchmark Toggle -->
-        <div class="flex flex-col gap-1">
-          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Benchmark</span>
-          <div class="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
-            <BarChart3 :size="14" class="text-[var(--color-text-muted)]" />
-            <select v-model="benchmarkType" class="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer">
-              <option value="SPY">S&P 500 (SPY)</option>
-              <option value="ASSET">Buy & Hold (Asset)</option>
-            </select>
-          </div>
-        </div>
-
-
-
-        <!-- Strategy Source -->
-        <div class="flex flex-col gap-1">
-          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">AI Signal Source</span>
-          <div class="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
-            <Info :size="14" class="text-[var(--color-text-muted)]" />
-            <select v-model="strategySource" class="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer">
-              <option value="RATING">Expert Ratings</option>
-              <option value="ACTION">Final Actions (PM)</option>
-            </select>
-          </div>
-        </div>
-
-
-        <!-- Cost Simulation -->
-        <div class="flex flex-col gap-1">
-          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Trade Costs</span>
-          <div class="flex items-center gap-3 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
-            <select v-if="showCosts" v-model="costModel" class="bg-transparent border-none text-[10px] font-bold focus:ring-0 cursor-pointer p-0 mr-1">
-              <option value="FLAT">0.1% Flat</option>
-              <option value="IBKR">IBKR Tiered</option>
-            </select>
-            <button 
-              @click="showCosts = !showCosts"
-              class="relative inline-flex h-4 w-7 items-center rounded-full transition-colors focus:outline-none"
-              :class="showCosts ? 'bg-[var(--color-accent-primary)]' : 'bg-gray-700'"
-            >
-              <span 
-                class="inline-block h-2.5 w-2.5 transform rounded-full bg-white transition-transform"
-                :class="showCosts ? 'translate-x-3.5' : 'translate-x-1'"
-              />
-            </button>
-          </div>
-        </div>
-
-
-        <button @click="loadData" class="p-2 rounded-lg bg-[var(--color-bg-elevated)] hover:bg-[var(--color-bg-card)] border border-[var(--color-border-default)] transition-colors">
-          <RefreshCw :size="18" :class="{ 'animate-spin': loading }" />
-        </button>
-        <button 
-          @click="handleClearMemory" 
-          class="p-2 rounded-lg bg-[var(--color-bg-elevated)] hover:bg-red-500/20 text-[var(--color-text-muted)] hover:text-red-400 border border-[var(--color-border-default)] transition-colors"
-          title="Clear History"
-        >
-          <Trash2 :size="18" />
-        </button>
-      </div>
-
-      <!-- Research Mode Filter Bar -->
-      <div class="flex flex-wrap gap-4 items-center bg-white/5 p-4 rounded-xl border border-white/10 mt-4">
-        <div class="flex flex-col gap-1">
-          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Quick LLM</span>
-          <select v-model="selectedQuickModel" class="bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded px-2 py-1 text-xs focus:outline-none focus:border-[var(--color-accent-primary)] min-w-[120px]">
-            <option v-for="m in availableQuickModels" :key="m" :value="m">{{ m }}</option>
-          </select>
-        </div>
-        <div class="flex flex-col gap-1">
-          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Deep LLM</span>
-          <select v-model="selectedDeepModel" class="bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded px-2 py-1 text-xs focus:outline-none focus:border-[var(--color-accent-primary)] min-w-[120px]">
-            <option v-for="m in availableDeepModels" :key="m" :value="m">{{ m }}</option>
-          </select>
-        </div>
-        <div class="flex flex-col gap-1">
-          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Debate Depth</span>
-          <select v-model="selectedDepth" class="bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded px-2 py-1 text-xs focus:outline-none focus:border-[var(--color-accent-primary)] min-w-[100px]">
-            <option v-for="d in availableDepths" :key="d" :value="d">{{ d === 'ALL' ? 'ALL' : d + ' Rounds' }}</option>
-          </select>
-        </div>
-        
-        <div class="flex-1"></div>
-        
-        <!-- Efficiency Card -->
-        <div v-if="stats.count > 0" class="flex flex-col items-end px-4 border-l border-white/10">
-          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)]">Efficiency Score</span>
-          <span class="text-lg font-bold text-yellow-400">{{ (stats.totalAlpha / (stats.totalRuntime / 60 || 1)).toFixed(2) }} <small class="text-[8px] opacity-50">Alpha/Min</small></span>
         </div>
       </div>
     </div>
 
+      <!-- Simulation Config Toggle Bar -->
+      <div v-if="configs.length > 0" class="flex flex-wrap gap-4 items-center bg-white/5 p-4 rounded-xl border border-white/10 mt-4">
+        <div class="flex flex-col gap-1">
+          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Simulation Configs</span>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="c in configs"
+              :key="c.config_id"
+              @click="toggleConfig(c.config_id)"
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all"
+              :class="enabledConfigs.has(c.config_id)
+                ? 'border-white/20 bg-white/10 text-white'
+                : 'border-white/5 bg-white/[0.02] text-[var(--color-text-muted)] opacity-40'"
+            >
+              <span class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: c.color }"></span>
+              {{ c.label }}
+            </button>
+          </div>
+        </div>
+      </div>
+    <div class="space-y-4">
+      <div v-for="s in multiConfigStats" :key="s.config.config_id" 
+           class="glass p-4 rounded-2xl border border-[var(--color-border-default)] transition-all hover:border-white/20"
+           :style="{ borderLeft: `4px solid ${s.config.color}` }">
+        <div class="flex flex-wrap items-center justify-between gap-4">
+          <!-- Config Header -->
+          <div class="flex flex-col min-w-[200px]">
+            <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] tracking-widest">Simulation Config</span>
+            <span class="text-sm font-bold text-white">{{ s.config.label }}</span>
+            <div class="flex items-center gap-2 mt-1">
+               <span class="text-[10px] text-yellow-400 font-bold">{{ (s.totalAlpha / (s.totalRuntime / 60 || 1)).toFixed(2) }} <small class="opacity-50">Alpha/Min</small></span>
+               <span class="text-[10px] text-[var(--color-text-muted)]">•</span>
+               <span class="text-[10px] text-[var(--color-text-muted)]">{{ s.count }} Trades</span>
+            </div>
+          </div>
 
-
-    <!-- Stats Grid -->
-    <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
-      <div class="glass p-4 rounded-xl space-y-1">
-        <p class="text-xs text-[var(--color-text-muted)] font-medium uppercase tracking-wider">Trades Filtered</p>
-        <p class="text-2xl font-bold">{{ stats.count }}</p>
-      </div>
-      <div class="glass p-4 rounded-xl space-y-1">
-        <p class="text-xs text-[var(--color-text-muted)] font-medium uppercase tracking-wider">Win Rate</p>
-        <p class="text-2xl font-bold text-blue-400">{{ stats.winRate.toFixed(1) }}%</p>
-      </div>
-      <div class="glass p-4 rounded-xl space-y-1">
-        <p class="text-xs text-[var(--color-text-muted)] font-medium uppercase tracking-wider">Total Alpha</p>
-        <p class="text-2xl font-bold" :class="stats.totalAlpha >= 0 ? 'text-green-400' : 'text-red-400'">
-          {{ stats.totalAlpha >= 0 ? '+' : '' }}{{ stats.totalAlpha.toFixed(1) }}%
-        </p>
-      </div>
-      <div class="glass p-4 rounded-xl space-y-1">
-        <p class="text-xs text-[var(--color-text-muted)] font-medium uppercase tracking-wider">Strategy ROI</p>
-        <p class="text-2xl font-bold text-[var(--color-accent-primary)]">
-          {{ stats.stratROI.toFixed(1) }}%
-        </p>
-      </div>
-      <div class="glass p-4 rounded-xl space-y-1">
-        <p class="text-xs text-[var(--color-text-muted)] font-medium uppercase tracking-wider">Benchmark ROI</p>
-        <p class="text-2xl font-bold text-[#6366f1]">
-          {{ stats.benchROI.toFixed(1) }}%
-        </p>
+          <!-- KPI Mini Cards -->
+          <div class="flex flex-1 flex-wrap gap-4 md:gap-8 justify-end">
+            <div class="flex flex-col items-end">
+              <span class="text-[9px] uppercase font-bold text-[var(--color-text-muted)]">Win Rate</span>
+              <span class="text-lg font-bold text-blue-400">{{ s.winRate.toFixed(1) }}%</span>
+            </div>
+            <div class="flex flex-col items-end">
+              <span class="text-[9px] uppercase font-bold text-[var(--color-text-muted)]">Total Alpha</span>
+              <span class="text-lg font-bold" :class="s.totalAlpha >= 0 ? 'text-green-400' : 'text-red-400'">
+                {{ s.totalAlpha >= 0 ? '+' : '' }}{{ s.totalAlpha.toFixed(1) }}%
+              </span>
+            </div>
+            <div class="flex flex-col items-end">
+              <span class="text-[9px] uppercase font-bold text-[var(--color-text-muted)]">Strategy ROI</span>
+              <span class="text-lg font-bold text-[var(--color-accent-primary)]">{{ s.stratROI.toFixed(1) }}%</span>
+            </div>
+            <div class="flex flex-col items-end">
+              <span class="text-[9px] uppercase font-bold text-[var(--color-text-muted)]">Benchmark</span>
+              <span class="text-lg font-bold text-[#6366f1]">{{ s.benchROI.toFixed(1) }}%</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -641,14 +706,17 @@ function getSignalLabel(text: string) {
 
           </div>
         </h3>
-        <div class="flex items-center gap-4 text-xs font-medium">
-          <div class="flex items-center gap-1.5">
-            <div class="w-2.5 h-2.5 rounded-full bg-[#10b981]"></div>
-            <span class="text-[var(--color-text-secondary)]">Strategy</span>
+        <div class="flex flex-wrap items-center gap-4 text-[10px] font-bold uppercase tracking-wider">
+          <!-- Dynamic Strategy Legends -->
+          <div v-for="c in activeConfigs" 
+               :key="c.config_id" class="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded-md border border-white/5">
+            <div class="w-2 h-2 rounded-full" :style="{ backgroundColor: c.color }"></div>
+            <span class="text-[var(--color-text-secondary)]">{{ c.label }}</span>
           </div>
-          <div class="flex items-center gap-1.5">
-            <div class="w-2.5 h-2.5 rounded-full bg-[#6366f1]"></div>
-            <span class="text-[var(--color-text-secondary)]">{{ benchmarkType === 'SPY' ? 'S&P 500' : 'Buy & Hold' }}</span>
+          <!-- Benchmark Legend -->
+          <div class="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded-md border border-white/5">
+            <div class="w-2 h-2 rounded-full bg-[#6366f1] border border-dashed border-white/20"></div>
+            <span class="text-[var(--color-text-secondary)]">Benchmark ({{ benchmarkType === 'SPY' ? 'S&P 500' : 'Hold' }})</span>
           </div>
         </div>
       </div>
@@ -690,51 +758,18 @@ function getSignalLabel(text: string) {
                 </td>
 
                 <!-- Realized Strategy Return -->
-                <td class="px-6 py-4 text-right font-mono font-bold text-sm" :class="(() => {
-                  const signal = strategySource === 'RATING' ? entry.rating : entry.decision
-                  const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
-                  const stratRet = isLong ? parsePct(entry.raw) : 0
-                  return stratRet >= 0 ? 'text-green-400' : 'text-red-400'
-                })()">
-                  {{ (() => {
-                    const signal = strategySource === 'RATING' ? entry.rating : entry.decision
-                    const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
-                    const stratRet = isLong ? parsePct(entry.raw) : 0
-                    return (stratRet * 100).toFixed(2) + '%'
-                  })() }}
+                <td class="px-6 py-4 text-right font-mono font-bold text-sm" :class="getEntryStratRet(entry) >= 0 ? 'text-green-400' : 'text-red-400'">
+                  {{ (getEntryStratRet(entry) * 100).toFixed(2) }}%
                 </td>
 
                 <!-- Benchmark Return -->
                 <td class="px-6 py-4 text-right font-mono text-xs text-[var(--color-text-muted)]">
-                  {{ (() => {
-                    const raw = parsePct(entry.raw)
-                    const alpha = parsePct(entry.alpha)
-                    const benchRet = benchmarkType === 'SPY' ? (raw - alpha) : raw
-                    return (benchRet * 100).toFixed(2) + '%'
-                  })() }}
+                  {{ (getEntryBenchRet(entry) * 100).toFixed(2) }}%
                 </td>
 
                 <!-- Realized Alpha -->
-                <td class="px-6 py-4 text-right font-mono font-bold text-sm" :class="(() => {
-                  const signal = strategySource === 'RATING' ? entry.rating : entry.decision
-                  const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
-                  const stratRet = isLong ? parsePct(entry.raw) : 0
-                  const raw = parsePct(entry.raw)
-                  const alpha = parsePct(entry.alpha)
-                  const benchRet = benchmarkType === 'SPY' ? (raw - alpha) : raw
-                  const realizedAlpha = stratRet - benchRet
-                  return realizedAlpha >= 0 ? 'text-green-400' : 'text-red-400'
-                })()">
-                  {{ (() => {
-                    const signal = strategySource === 'RATING' ? entry.rating : entry.decision
-                    const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
-                    const stratRet = isLong ? parsePct(entry.raw) : 0
-                    const raw = parsePct(entry.raw)
-                    const alpha = parsePct(entry.alpha)
-                    const benchRet = benchmarkType === 'SPY' ? (raw - alpha) : raw
-                    const realizedAlpha = stratRet - benchRet
-                    return (realizedAlpha >= 0 ? '+' : '') + (realizedAlpha * 100).toFixed(2) + '%'
-                  })() }}
+                <td class="px-6 py-4 text-right font-mono font-bold text-sm" :class="getEntryAlpha(entry) >= 0 ? 'text-green-400' : 'text-red-400'">
+                  {{ getEntryAlpha(entry) >= 0 ? '+' : '' }}{{ (getEntryAlpha(entry) * 100).toFixed(2) }}%
                 </td>
 
                 <td class="px-6 py-4 text-right font-mono text-xs text-[var(--color-text-muted)]">

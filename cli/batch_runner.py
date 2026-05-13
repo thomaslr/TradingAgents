@@ -307,6 +307,7 @@ def run_batch_analysis(
                     results = _extract_trading_results(
                         final_state, decision, ticker, date
                     )
+                    results["runtime_sec"] = elapsed
                     registry.mark_completed(run_id, results)
                     completed += 1
                     

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { createChart, type IChartApi, type ISeriesApi, ColorType, CandlestickSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts'
-import { fetchOHLC, fetchRuns, fetchTickers, type Run, type VolumeItem } from '../api/client'
+import { fetchOHLC, fetchRuns, fetchTickers, fetchConfigs, type Run, type VolumeItem, type SimulationConfig } from '../api/client'
 import { ArrowLeft, RefreshCw, Clock } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 
@@ -21,6 +21,8 @@ const dateTo = ref(localStorage.getItem('chart_to') || '')
 const tickerInput = ref(props.ticker || localStorage.getItem('chart_ticker') || '')
 const availableTickers = ref<any[]>([])
 const runs = ref<Run[]>([])
+const configs = ref<SimulationConfig[]>([])
+const enabledConfigs = ref<Set<string>>(new Set())
 const showBuy = ref(localStorage.getItem('chart_show_buy') !== 'false')
 const showSell = ref(localStorage.getItem('chart_show_sell') !== 'false')
 const showHold = ref(localStorage.getItem('chart_show_hold') === 'true')
@@ -44,11 +46,28 @@ const periods = [
 ]
 
 onMounted(async () => {
-  await loadTickers()
+  await Promise.all([loadTickers(), loadConfigs()])
   if (tickerInput.value) {
     await loadChart()
   }
 })
+
+async function loadConfigs() {
+  try {
+    configs.value = await fetchConfigs()
+    enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
+  } catch (e) {
+    console.error('Failed to load configs', e)
+  }
+}
+
+function toggleConfig(configId: string) {
+  const s = new Set(enabledConfigs.value)
+  if (s.has(configId)) s.delete(configId)
+  else s.add(configId)
+  enabledConfigs.value = s
+  loadChart()
+}
 
 async function loadTickers() {
   try {
@@ -354,6 +373,21 @@ watch([dateFrom, dateTo], ([f, t]) => {
         <span class="w-3 h-3 rounded-full bg-[var(--color-signal-hold)]"></span>
         <span :class="showHold ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'">Hold</span>
       </button>
+
+      <!-- Config Toggles -->
+      <template v-if="configs.length > 1">
+        <div class="w-px h-6 bg-[var(--color-border-default)] self-center"></div>
+        <button
+          v-for="c in configs"
+          :key="c.config_id"
+          @click="toggleConfig(c.config_id)"
+          class="flex items-center gap-2 transition-opacity"
+          :class="enabledConfigs.has(c.config_id) ? 'opacity-100' : 'opacity-40'"
+        >
+          <span class="w-3 h-3 rounded-full" :style="{ backgroundColor: c.color }"></span>
+          <span :class="enabledConfigs.has(c.config_id) ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'">{{ c.label }}</span>
+        </button>
+      </template>
     </div>
 
   </div>
