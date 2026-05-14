@@ -52,6 +52,23 @@ CREATE TABLE IF NOT EXISTS simulation_configs (
     created_at  TEXT,
     UNIQUE(provider, quick_model, deep_model, depth)
 );
+
+CREATE TABLE IF NOT EXISTS research_queue (
+    id              TEXT PRIMARY KEY,
+    tickers         TEXT NOT NULL, -- JSON list
+    dates           TEXT NOT NULL, -- JSON list
+    provider        TEXT NOT NULL,
+    quick_model     TEXT NOT NULL,
+    deep_model      TEXT NOT NULL,
+    depth           INTEGER NOT NULL,
+    force           INTEGER DEFAULT 0,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    error           TEXT,
+    sort_order      INTEGER DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    started_at      TEXT,
+    completed_at    TEXT
+);
 """
 
 # Columns added after the initial schema.  Each entry is
@@ -123,8 +140,14 @@ class RunRegistry:
                 )
                 self.conn.commit()
             except sqlite3.OperationalError:
-                # Column already exists — expected on subsequent runs
                 pass
+
+        # Also migrate research_queue if needed
+        try:
+            self.conn.execute("ALTER TABLE research_queue ADD COLUMN sort_order INTEGER DEFAULT 0")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass
 
     # ------------------------------------------------------------------
     # Simulation Configs
@@ -432,9 +455,110 @@ class RunRegistry:
         self.conn.execute("DELETE FROM runs WHERE ticker = ? AND trade_date = ?", (ticker, trade_date))
         self.conn.commit()
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
+    # ── Research Queue Management ──────────────────────────
+
+    def add_to_queue(self, job_data: Dict[str, Any], priority: bool = False):
+        """Append a job to the persistent research queue."""
+        import json
+        now = _now_iso()
+        
+        # Determine sort_order
+        if priority:
+            # Get the minimum sort_order and subtract 1
+            cur = self.conn.execute("SELECT MIN(sort_order) FROM research_queue")
+            min_order = cur.fetchone()[0] or 0
+            sort_order = min_order - 1
+        else:
+            # Get the maximum sort_order and add 1
+            cur = self.conn.execute("SELECT MAX(sort_order) FROM research_queue")
+            max_order = cur.fetchone()[0] or 0
+            sort_order = max_order + 1
+
+        self.conn.execute(
+            """
+            INSERT INTO research_queue (
+                id, tickers, dates, provider, quick_model, deep_model, 
+                depth, force, status, sort_order, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_data["id"],
+                json.dumps(job_data["tickers"]),
+                json.dumps(job_data["dates"]),
+                job_data["provider"],
+                job_data["quick_model"],
+                job_data["deep_model"],
+                job_data["depth"],
+                1 if job_data.get("force") else 0,
+                "pending",
+                sort_order,
+                now
+            )
+        )
+        self.conn.commit()
+
+    def get_queue(self) -> List[Dict[str, Any]]:
+        """Fetch all non-completed jobs in the queue, ordered by sort_order."""
+        import json
+        cursor = self.conn.execute(
+            "SELECT * FROM research_queue WHERE status != 'completed' ORDER BY sort_order ASC, created_at ASC"
+        )
+        cols = [c[0] for c in cursor.description]
+        results = []
+        for row in cursor.fetchall():
+            d = dict(zip(cols, row))
+            d["tickers"] = json.loads(d["tickers"])
+            d["dates"] = json.loads(d["dates"])
+            d["force"] = bool(d["force"])
+            results.append(d)
+        return results
+
+    def reorder_queue(self, job_ids: List[str]):
+        """Update the sort_order of jobs based on the provided ID list."""
+        for index, job_id in enumerate(job_ids):
+            self.conn.execute(
+                "UPDATE research_queue SET sort_order = ? WHERE id = ?",
+                (index, job_id)
+            )
+        self.conn.commit()
+
+    def remove_from_queue(self, job_id: str):
+        """Delete a job from the queue."""
+        self.conn.execute("DELETE FROM research_queue WHERE id = ?", (job_id,))
+        self.conn.commit()
+
+    def update_queue_status(self, job_id: str, status: str, error: Optional[str] = None):
+        """Update job lifecycle state."""
+        now = _now_iso()
+        if status == "running":
+            self.conn.execute(
+                "UPDATE research_queue SET status = ?, started_at = ? WHERE id = ?",
+                (status, now, job_id)
+            )
+        elif status in ("completed", "failed"):
+            self.conn.execute(
+                "UPDATE research_queue SET status = ?, completed_at = ?, error = ? WHERE id = ?",
+                (status, now, error, job_id)
+            )
+        else:
+            self.conn.execute(
+                "UPDATE research_queue SET status = ? WHERE id = ?",
+                (status, job_id)
+            )
+        self.conn.commit()
+
+    def get_next_queued_job(self) -> Optional[Dict[str, Any]]:
+        """Find the next job that should be run."""
+        queue = self.get_queue()
+        # Prioritize 'running' jobs (from crash recovery) then first 'pending'
+        running = [j for j in queue if j["status"] == "running"]
+        if running:
+            return running[0]
+        pending = [j for j in queue if j["status"] == "pending"]
+        if pending:
+            return pending[0]
+        return None
+
 
     def close(self) -> None:
         self.conn.close()

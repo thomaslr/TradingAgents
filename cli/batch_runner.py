@@ -38,6 +38,9 @@ class TokenTracker(BaseCallbackHandler):
         self.progress = progress
         self.task_id = task_id
 
+    def get_usage(self) -> Dict[str, int]:
+        return {"input": self.input_tokens, "output": self.output_tokens}
+
     def on_llm_end(self, response, **kwargs) -> None:
         """Collect token usage from the LLM response metadata."""
         for generations in response.generations:
@@ -55,6 +58,9 @@ class TokenTracker(BaseCallbackHandler):
                     if self.progress and self.task_id is not None:
                         tokens_str = f"[blue]{self.input_tokens}ᵢ[/blue]/[cyan]{self.output_tokens}ₒ[/cyan]"
                         self.progress.update(self.task_id, tokens=tokens_str)
+                    
+                    if hasattr(self, 'external_callback') and self.external_callback:
+                        self.external_callback(self.input_tokens, self.output_tokens)
                     
 
 
@@ -182,6 +188,7 @@ def run_batch_analysis(
     force: bool = False,
     abort_event: Optional[threading.Event] = None,
     progress_callback: Optional[Callable[[str, str], None]] = None,
+    token_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[str, Any]:
     """Execute batch analysis sequentially.
 
@@ -285,6 +292,9 @@ def run_batch_analysis(
                 try:
                     # Build the graph
                     tracker = TokenTracker(progress, task)
+                    if token_callback:
+                        tracker.external_callback = token_callback
+                        
                     status_cb = StatusTracker(progress, task)
                     graph = TradingAgentsGraph(
                         ALL_ANALYSTS,

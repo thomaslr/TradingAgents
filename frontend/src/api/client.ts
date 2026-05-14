@@ -122,9 +122,44 @@ export async function stopAnalysis() {
   return data
 }
 
-export async function fetchAnalysisStatus(): Promise<{ running: boolean, job: any, last_error?: string | null }> {
+export async function fetchAnalysisStatus(): Promise<{ 
+  running: boolean, 
+  job: any, 
+  last_error?: string | null,
+  queue_count?: number,
+  is_paused?: boolean
+}> {
   const { data } = await api.get('/analysis/status')
   return data
+}
+
+export async function fetchResearchQueue(): Promise<any[]> {
+  const { data } = await api.get('/analysis/queue')
+  return data
+}
+
+export async function addToResearchQueue(item: any): Promise<void> {
+  await api.post('/analysis/queue', item)
+}
+
+export async function removeFromResearchQueue(jobId: string): Promise<void> {
+  await api.delete(`/analysis/queue/${jobId}`)
+}
+
+export async function reorderResearchQueue(jobIds: string[]): Promise<void> {
+  await api.post('/analysis/queue/reorder', jobIds)
+}
+
+export async function startResearchQueue(): Promise<void> {
+  await api.post('/analysis/queue/start')
+}
+
+export async function pauseResearchQueue(): Promise<void> {
+  await api.post('/analysis/queue/pause')
+}
+
+export async function resumeResearchQueue(): Promise<void> {
+  await api.post('/analysis/queue/resume')
 }
 
 // ── Health & Config ──────────────────────────────────────
@@ -155,8 +190,10 @@ export interface ScheduleJob {
   tickers: string[]
   config: Record<string, any>
   interval_minutes: number
+  scheduled_time: string | null
   last_run: string | null
   next_run: string | null
+  paused: boolean
   created_at: string
 }
 
@@ -165,13 +202,21 @@ export async function fetchSchedules(): Promise<ScheduleJob[]> {
   return data
 }
 
-export async function addSchedule(tickers: string[], config: Record<string, any>, interval_minutes: number): Promise<ScheduleJob> {
-  const { data } = await api.post('/schedule', { tickers, config, interval_minutes })
+export async function addSchedule(tickers: string[], config: Record<string, any>, interval_minutes: number, scheduled_time?: string): Promise<ScheduleJob> {
+  const { data } = await api.post('/schedule', { tickers, config, interval_minutes, scheduled_time })
   return data.job
 }
 
 export async function deleteSchedule(jobId: string): Promise<void> {
   await api.delete(`/schedule/${jobId}`)
+}
+
+export async function toggleSchedule(jobId: string): Promise<void> {
+  await api.post(`/schedule/${jobId}/toggle`)
+}
+
+export async function updateSchedule(jobId: string, updates: Record<string, any>): Promise<void> {
+  await api.patch(`/schedule/${jobId}`, updates)
 }
 
 // ── Memory / Performance ────────────────────────────────

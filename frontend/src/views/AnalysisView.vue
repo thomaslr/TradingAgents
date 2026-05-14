@@ -1,41 +1,43 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { 
-  fetchSchedules, 
-  addSchedule, 
-  deleteSchedule, 
-  startAnalysis, 
-  stopAnalysis,
-  fetchAnalysisStatus,
+  fetchAnalysisStatus, 
   fetchConfig, 
   fetchOllamaModels,
+  fetchResearchQueue,
+  addToResearchQueue,
+  removeFromResearchQueue,
+  reorderResearchQueue,
+  startResearchQueue,
+  pauseResearchQueue,
+  resumeResearchQueue,
+  fetchSchedules,
+  toggleSchedule,
+  deleteSchedule,
+  startAnalysis,
+  stopAnalysis,
+  addSchedule,
   type ScheduleJob 
 } from '../api/client'
-import { Play, Square, Clock, Trash2, CheckCircle, RefreshCw, AlertCircle } from 'lucide-vue-next'
+import { Play, Pause, Square, Clock, Trash2, CheckCircle, RefreshCw, AlertCircle, GripVertical, Settings2, Zap } from 'lucide-vue-next'
 
-interface QueuedJob {
-  id: string
-  tickers: string[]
-  dateFrom: string
-  dateTo: string
-  provider: string
-  quickModel: string
-  deepModel: string
-  depth: number
-  force: boolean
-}
+// interface QueuedJob deleted
 
 const schedules = ref<ScheduleJob[]>([])
-const researchQueue = ref<QueuedJob[]>(JSON.parse(localStorage.getItem('trading_queue') || '[]'))
-const isQueueRunning = ref(localStorage.getItem('trading_queue_running') === 'true')
-const queueTotal = ref(Number(localStorage.getItem('trading_queue_total') || '0'))
-const queueCurrent = ref(Number(localStorage.getItem('trading_queue_current') || '0'))
+const researchQueue = ref<any[]>([])
+const isQueueRunning = ref(false)
+const isQueuePaused = ref(false)
+const queueTotal = ref(0)
+const queueCurrent = ref(0)
 const ollamaModels = ref<string[]>([])
 const loading = ref(false)
+const dragIndex = ref<number | null>(null)
 const fetchingModels = ref(false)
 const isStopping = ref(false)
+const activeTab = ref<'research' | 'automation'>('research')
 const error = ref('')
 const successMessage = ref('')
+const scheduledTime = ref('09:00')
 const isRunning = ref(false)
 const currentJobParams = ref<string>('')
 const activeConfig = ref<any>(null)
@@ -43,6 +45,13 @@ const activeJobMessage = ref<string | null>(null)
 const isProcessingQueue = ref(false)
 let statusPolling: any = null
 const launchWatchdog = ref(0)
+
+// Token Tracking State
+const lastInputTokens = ref(0)
+const lastOutputTokens = ref(0)
+const lastTokenUpdate = ref(Date.now())
+const inputTokensPerSec = ref(0)
+const outputTokensPerSec = ref(0)
 
 // Form State
 const tickersInput = ref(localStorage.getItem('trading_tickers') || '')
@@ -69,14 +78,11 @@ watch(dateFrom, (v) => localStorage.setItem('trading_from', v))
 watch(dateTo, (v) => localStorage.setItem('trading_to', v))
 watch(force, (v) => localStorage.setItem('trading_force', String(v)))
 watch(depth, (v) => localStorage.setItem('trading_depth', String(v)))
-watch(researchQueue, (v) => localStorage.setItem('trading_queue', JSON.stringify(v)), { deep: true })
-watch(isQueueRunning, (v) => localStorage.setItem('trading_queue_running', String(v)))
-watch(queueTotal, (v) => localStorage.setItem('trading_queue_total', String(v)))
-watch(queueCurrent, (v) => localStorage.setItem('trading_queue_current', String(v)))
 
 onMounted(async () => {
   await loadDefaultConfig()
   loadSchedules()
+  loadQueue()
   checkStatus()
   // Start polling for status
   statusPolling = setInterval(checkStatus, 3000)
@@ -90,7 +96,13 @@ async function checkStatus() {
   try {
     const status = await fetchAnalysisStatus()
     isRunning.value = status.running
+    isQueuePaused.value = !!status.is_paused
     
+    // Always sync queue if there are changes
+    if (status.queue_count !== undefined) {
+       loadQueue()
+    }
+
     if (status.running && status.job) {
       isProcessingQueue.value = false // We've confirmed it's running
       activeConfig.value = status.job.config
@@ -102,18 +114,37 @@ async function checkStatus() {
         
       currentJobParams.value = `${current} | Batch: ${tickers}`
       successMessage.value = `Analysis in progress...`
+      
+      // If backend has a job ID, we are likely in a queue run
+      if (status.job.id) {
+         isQueueRunning.value = true
+      }
+
+      // Calculate Token Rates (every ~5s)
+      const now = Date.now()
+      const deltaMs = now - lastTokenUpdate.value
+      if (deltaMs >= 5000) {
+        const currentIn = status.job.input_tokens || 0
+        const currentOut = status.job.output_tokens || 0
+        
+        // (Current - Last) / (ms / 1000)
+        const secFactor = (deltaMs / 1000)
+        inputTokensPerSec.value = Math.round((currentIn - lastInputTokens.value) / secFactor)
+        outputTokensPerSec.value = Math.round((currentOut - lastOutputTokens.value) / secFactor)
+        
+        lastInputTokens.value = currentIn
+        lastOutputTokens.value = currentOut
+        lastTokenUpdate.value = now
+      }
     } else {
       activeConfig.value = null
       
       if (!status.running) {
-        // Safety watchdog: if we're "launching" but backend is idle, 
-        // give it a few polls then error out.
         if (isProcessingQueue.value) {
           launchWatchdog.value++
           if (launchWatchdog.value > 4) { // ~12 seconds
             error.value = status.last_error ? `Launch Failed: ${status.last_error}` : 'Launch Timeout: The backend did not start the job.'
             isProcessingQueue.value = false
-            isQueueRunning.value = false
             launchWatchdog.value = 0
           }
         } else {
@@ -123,7 +154,6 @@ async function checkStatus() {
         if (status.last_error && isProcessingQueue.value) {
            error.value = `Launch Failed: ${status.last_error}`
            isProcessingQueue.value = false
-           isQueueRunning.value = false
         }
         
         if (isStopping.value === true) {
@@ -132,24 +162,35 @@ async function checkStatus() {
           isQueueRunning.value = false
         }
         
-        // Auto-advance logic
-        if (isQueueRunning.value && !isProcessingQueue.value) {
-          if (researchQueue.value.length > 0) {
-            queueCurrent.value++
-            runNextInQueue()
-          } else {
-            isQueueRunning.value = false
-            queueTotal.value = 0
-            queueCurrent.value = 0
-            successMessage.value = 'Research Stack Complete.'
-          }
-        } else if (successMessage.value.includes('in progress')) {
+        // Auto-advance is now handled by the backend worker.
+        // We just watch the status.
+        if (successMessage.value.includes('in progress')) {
           successMessage.value = 'Analysis complete.'
         }
       }
     }
   } catch (e) {
     console.error('Failed to fetch status:', e)
+  }
+}
+
+async function loadQueue() {
+  try {
+    const queue = await fetchResearchQueue()
+    researchQueue.value = queue.map(j => ({
+       id: j.id,
+       tickers: j.tickers,
+       dateFrom: j.dates[0],
+       dateTo: j.dates[1],
+       provider: j.provider,
+       quickModel: j.quick_model,
+       deepModel: j.deep_model,
+       depth: j.depth,
+       force: j.force,
+       status: j.status
+    }))
+  } catch (e) {
+    console.error('Failed to load queue:', e)
   }
 }
 
@@ -229,7 +270,7 @@ async function handleSubmit() {
   }
 
   try {
-    if (executionType.value === 'now') {
+    if (activeTab.value === 'research') {
       let dates: string[] = []
       if (dateFrom.value && dateTo.value) {
         dates = [dateFrom.value]
@@ -255,8 +296,8 @@ async function handleSubmit() {
       successMessage.value = `Analysis started.`
       isRunning.value = true
     } else {
-      await addSchedule(tickers, config, intervalMinutes.value)
-      successMessage.value = `Scheduled analysis created.`
+      await addSchedule(tickers, config, intervalMinutes.value, scheduledTime.value)
+      successMessage.value = `Automated pipeline created.`
       await loadSchedules()
     }
   } catch (e: any) {
@@ -266,14 +307,14 @@ async function handleSubmit() {
   }
 }
 
-function addToQueue() {
+async function addToQueue() {
   if (!tickersInput.value.trim()) {
     error.value = 'Please enter at least one ticker'
     return
   }
   
   const tickers = tickersInput.value.split(',').map(t => t.trim().toUpperCase()).filter(t => t)
-  researchQueue.value.push({
+  const job = {
     id: Math.random().toString(36).substring(7),
     tickers,
     dateFrom: dateFrom.value,
@@ -283,72 +324,64 @@ function addToQueue() {
     deepModel: deepModel.value,
     depth: depth.value,
     force: force.value
-  })
-  successMessage.value = 'Run added to Research Queue.'
-  error.value = ''
+  }
+  
+  try {
+    await addToResearchQueue(job)
+    await loadQueue()
+    successMessage.value = 'Run added to Research Queue.'
+    error.value = ''
+  } catch (e: any) {
+    error.value = `Failed to add to queue: ${e.message}`
+  }
 }
 
-function removeFromQueue(index: number) {
-  researchQueue.value.splice(index, 1)
+async function removeFromQueue(jobId: string) {
+  try {
+    await removeFromResearchQueue(jobId)
+    await loadQueue()
+  } catch (e: any) {
+    error.value = `Failed to remove: ${e.message}`
+  }
 }
 
 async function runQueue() {
-  if (researchQueue.value.length === 0) return
-  isQueueRunning.value = true
-  queueTotal.value = researchQueue.value.length
-  queueCurrent.value = 1
-  await runNextInQueue()
-}
-
-async function runNextInQueue() {
-  if (researchQueue.value.length === 0) {
-    isQueueRunning.value = false
-    return
-  }
-  
-  const job = researchQueue.value[0]
-  isProcessingQueue.value = true
-  loading.value = true
-  
   try {
-    let dates: string[] = []
-    if (job.dateFrom && job.dateTo) {
-      dates = [job.dateFrom, job.dateTo]
+    if (isQueuePaused.value) {
+      await resumeResearchQueue()
     } else {
-      dates = [new Date().toISOString().split('T')[0]]
+      await startResearchQueue()
     }
-
-    await startAnalysis({
-      tickers: job.tickers,
-      dates,
-      force: job.force,
-      skip_completed: !job.force,
-      llm_provider: job.provider,
-      quick_think_llm: job.quickModel,
-      deep_think_llm: job.deepModel,
-      max_debate_rounds: job.depth
-    })
-    
-    // Remove from queue ONLY after successful API call
-    researchQueue.value.shift()
-    successMessage.value = `Launching Job ${queueCurrent.value}: ${job.tickers.join(', ')}...`
+    successMessage.value = 'Research Stack started.'
+    isQueueRunning.value = true
   } catch (e: any) {
-    error.value = `Queue Error: ${e.message}`
-    isQueueRunning.value = false
-    isProcessingQueue.value = false
-  } finally {
-    loading.value = false
+    error.value = `Failed to start stack: ${e.message}`
   }
 }
 
-function sweepDepth() {
+async function handlePauseToggle() {
+  try {
+    if (isQueuePaused.value) {
+      await resumeResearchQueue()
+      successMessage.value = 'Research Stack resumed.'
+    } else {
+      await pauseResearchQueue()
+      successMessage.value = 'Research Stack paused.'
+    }
+    // checkStatus will update the local isQueuePaused ref
+  } catch (e: any) {
+    error.value = `Pause toggle failed: ${e.message}`
+  }
+}
+
+async function sweepDepth() {
   if (!tickersInput.value.trim()) {
     error.value = 'Please enter a ticker first'
     return
   }
   const tickers = tickersInput.value.split(',').map(t => t.trim().toUpperCase()).filter(t => t)
   for (let i = 1; i <= 5; i++) {
-    researchQueue.value.push({
+    const job = {
       id: Math.random().toString(36).substring(7),
       tickers,
       dateFrom: dateFrom.value,
@@ -358,18 +391,59 @@ function sweepDepth() {
       deepModel: deepModel.value,
       depth: i,
       force: force.value
-    })
+    }
+    await addToResearchQueue(job)
   }
+  await loadQueue()
   successMessage.value = 'Created depth sweep (1-5) in queue.'
 }
 
+// ── Drag & Drop ──────────────────────────────────────────
+
+function onDragStart(index: number) {
+  dragIndex.value = index
+}
+
+function onDragOver(e: DragEvent) {
+  e.preventDefault() // Allow drop
+}
+
+async function onDrop(index: number) {
+  if (dragIndex.value === null) return
+  
+  const item = researchQueue.value.splice(dragIndex.value, 1)[0]
+  researchQueue.value.splice(index, 0, item)
+  dragIndex.value = null
+  
+  // Sync with server
+  try {
+    const ids = researchQueue.value.map(j => j.id)
+    await reorderResearchQueue(ids)
+  } catch (e: any) {
+    error.value = `Failed to sync order: ${e.message}`
+  }
+}
+
+// ── Schedules ─────────────────────────────────────────────
+
+async function handleToggleSchedule(id: string) {
+  try {
+    await toggleSchedule(id)
+    await loadSchedules()
+    successMessage.value = 'Schedule updated.'
+  } catch (e: any) {
+    error.value = `Failed to toggle: ${e.message}`
+  }
+}
+
 async function handleDeleteSchedule(id: string) {
-  if (!confirm('Are you sure you want to delete this schedule?')) return
+  if (!confirm('Are you sure you want to delete this automated pipeline?')) return
   try {
     await deleteSchedule(id)
     await loadSchedules()
+    successMessage.value = 'Schedule deleted.'
   } catch (e: any) {
-    alert(e.message || 'Failed to delete schedule')
+    error.value = `Failed to delete: ${e.message}`
   }
 }
 
@@ -398,8 +472,7 @@ function formatDate(dateStr: string | null): string {
 <template>
   <div class="p-4 md:p-8 max-w-5xl mx-auto space-y-8 text-[var(--color-text-primary)]">
     <div>
-      <h1 class="text-2xl md:text-3xl font-bold">New Analysis</h1>
-      <p class="text-sm text-[var(--color-text-muted)] mt-1">Configure and run or schedule analysis jobs</p>
+      <h1 class="text-3xl font-bold">Run and Schedule Analytics</h1>
     </div>
 
     <!-- Feedback messages -->
@@ -423,35 +496,43 @@ function formatDate(dateStr: string | null): string {
 
       <div class="flex-1 z-10">
         <div class="flex items-center justify-between mb-1">
-          <span class="font-black text-xs uppercase tracking-[0.2em]" :class="(isRunning || isQueueRunning) ? 'text-[var(--color-signal-buy)]' : 'text-blue-400'">
-            {{ (isRunning || isQueueRunning) ? 'SYSTEM ACTIVE' : 'SYSTEM STATUS' }}
+          <span class="font-black text-xs uppercase tracking-[0.2em]" :class="(isRunning || isQueueRunning) ? (isQueuePaused ? 'text-amber-400' : 'text-[var(--color-signal-buy)]') : 'text-blue-400'">
+            {{ isQueuePaused ? 'SYSTEM PAUSED' : ((isRunning || isQueueRunning) ? 'SYSTEM ACTIVE' : 'SYSTEM STATUS') }}
           </span>
           <span v-if="isRunning || isQueueRunning" class="text-[10px] font-mono opacity-50">RESEARCH RUN IN PROGRESS</span>
         </div>
-        <div class="text-white font-bold text-lg mb-1">{{ successMessage }}</div>
+        <div class="flex items-center gap-4 mb-2">
+          <div class="text-white font-black text-xl">{{ successMessage }}</div>
+          <div v-if="isRunning" class="text-white text-[10px] font-black bg-black/60 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10 shadow-lg">
+            <span class="text-yellow-400">TARGET</span>
+            {{ currentJobParams }}
+          </div>
+        </div>
         
         <div v-if="isRunning" class="flex flex-wrap gap-2 mt-2">
-          <div v-if="isQueueRunning && queueTotal > 0" class="text-white text-[10px] font-black opacity-80 bg-white/20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/20">
-            <span class="opacity-40">STACK PROGRESS</span>
+          <div v-if="isQueueRunning && queueTotal > 0" class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+            <span class="text-yellow-400">STACK PROGRESS</span>
             Job {{ queueCurrent }} of {{ queueTotal }}
-          </div>
-          <div class="text-white text-[10px] font-black opacity-80 bg-black bg-opacity-30 px-3 py-1.5 rounded-md flex items-center gap-2">
-            <span class="opacity-40">TARGET</span>
-            {{ currentJobParams }}
           </div>
           
           <!-- Metadata Pills (Fallback to form state if backend hasn't reported yet) -->
-          <div class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
-            <span class="opacity-40 text-white">ANALYST</span>
+          <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+            <span class="text-yellow-400">ANALYST</span>
             {{ activeConfig?.quick_model || quickModel }}
           </div>
-          <div class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
-            <span class="opacity-40 text-white">JUDGE</span>
+          <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+            <span class="text-yellow-400">JUDGE</span>
             {{ activeConfig?.deep_model || deepModel }}
           </div>
-          <div class="text-white text-[10px] font-black opacity-80 bg-[var(--color-accent-primary)] bg-opacity-20 px-3 py-1.5 rounded-md flex items-center gap-2 border border-[var(--color-accent-primary)]/20">
-            <span class="opacity-40 text-white">DEPTH</span>
+          <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+            <span class="text-yellow-400">DEPTH</span>
             {{ activeConfig?.debate_depth || depth }}
+          </div>
+
+          <!-- Tokens Rate Pill -->
+          <div v-if="inputTokensPerSec > 0 || outputTokensPerSec > 0" class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+            <span class="text-yellow-400">THROUGHPUT</span>
+            <span class="text-blue-400">{{ inputTokensPerSec }}ᵢ</span> / <span class="text-cyan-400">{{ outputTokensPerSec }}ₒ</span> <small class="text-white/40 ml-1">tps</small>
           </div>
         </div>
 
@@ -476,12 +557,34 @@ function formatDate(dateStr: string | null): string {
           <!-- Decorative background glow -->
           <div class="absolute -top-24 -right-24 w-48 h-48 bg-[var(--color-accent-primary)] opacity-5 blur-[100px] rounded-full"></div>
           
+          <!-- Tab Switcher -->
+          <div class="flex p-1 bg-[var(--color-bg-elevated)] rounded-xl border border-[var(--color-border-default)] mb-8 relative z-10">
+            <button 
+              @click="activeTab = 'research'"
+              type="button"
+              class="flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-black uppercase tracking-widest rounded-lg transition-all"
+              :class="activeTab === 'research' ? 'bg-white text-black shadow-lg' : 'text-[var(--color-text-muted)] hover:text-white'"
+            >
+              <Zap :size="14" />
+              Research
+            </button>
+            <button 
+              @click="activeTab = 'automation'"
+              type="button"
+              class="flex-1 flex items-center justify-center gap-2 py-2.5 text-xs font-black uppercase tracking-widest rounded-lg transition-all"
+              :class="activeTab === 'automation' ? 'bg-white text-black shadow-lg' : 'text-[var(--color-text-muted)] hover:text-white'"
+            >
+              <Clock :size="14" />
+              Scheduling
+            </button>
+          </div>
+
           <form @submit.prevent="handleSubmit" class="space-y-8 relative z-10">
             
             <!-- Tickers -->
             <div class="space-y-3">
               <label class="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">
-                <Play :size="16" class="text-[var(--color-accent-primary)]" />
+                <Settings2 :size="16" class="text-[var(--color-accent-primary)]" />
                 Target Tickers
               </label>
               <input 
@@ -490,7 +593,7 @@ function formatDate(dateStr: string | null): string {
                 placeholder="e.g. AAPL, MSFT, TSLA" 
                 class="w-full px-6 py-4 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] focus:ring-2 focus:ring-[var(--color-accent-primary)]/20 transition-all text-xl font-mono"
                 required
-                :disabled="isRunning"
+                :disabled="isProcessingQueue"
               />
             </div>
 
@@ -498,7 +601,7 @@ function formatDate(dateStr: string | null): string {
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div class="space-y-3">
                 <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Provider</label>
-                <select v-model="provider" :disabled="isRunning" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] transition-all">
+                <select v-model="provider" :disabled="isProcessingQueue" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] transition-all">
                   <option value="openai">OpenAI</option>
                   <option value="anthropic">Anthropic</option>
                   <option value="google">Google</option>
@@ -509,7 +612,7 @@ function formatDate(dateStr: string | null): string {
               <div class="space-y-3">
                 <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Quick Model</label>
                 <div v-if="provider === 'ollama'" class="relative">
-                  <select v-model="quickModel" :disabled="isRunning" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] appearance-none transition-all">
+                  <select v-model="quickModel" :disabled="isProcessingQueue" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] appearance-none transition-all">
                     <option v-for="m in ollamaModels" :key="m" :value="m">{{ m }}</option>
                     <option v-if="ollamaModels.length === 0" disabled>No models found</option>
                   </select>
@@ -517,13 +620,13 @@ function formatDate(dateStr: string | null): string {
                     <RefreshCw :size="18" class="animate-spin text-[var(--color-text-muted)]" />
                   </div>
                 </div>
-                <input v-else v-model="quickModel" :disabled="isRunning" type="text" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+                <input v-else v-model="quickModel" :disabled="isProcessingQueue" type="text" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
               </div>
 
               <div class="space-y-3">
                 <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Deep Model</label>
                 <div v-if="provider === 'ollama'" class="relative">
-                  <select v-model="deepModel" :disabled="isRunning" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] appearance-none transition-all">
+                  <select v-model="deepModel" :disabled="isProcessingQueue" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] appearance-none transition-all">
                     <option v-for="m in ollamaModels" :key="m" :value="m">{{ m }}</option>
                     <option v-if="ollamaModels.length === 0" disabled>No models found</option>
                   </select>
@@ -531,22 +634,49 @@ function formatDate(dateStr: string | null): string {
                     <RefreshCw :size="18" class="animate-spin text-[var(--color-text-muted)]" />
                   </div>
                 </div>
-                <input v-else v-model="deepModel" :disabled="isRunning" type="text" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+                <input v-else v-model="deepModel" :disabled="isProcessingQueue" type="text" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
               </div>
             </div>
 
-            <!-- Advanced Options -->
+            <!-- Contextual Fields -->
             <div class="flex flex-col gap-10 pt-6 border-t border-[var(--color-border-default)]">
-              <div v-if="executionType === 'now'" class="space-y-4">
+              <!-- Research Tab Fields -->
+              <div v-if="activeTab === 'research'" class="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
                 <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Analysis Timeframe</label>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div class="space-y-2">
                     <span class="text-[10px] uppercase font-black opacity-40">Start Date</span>
-                    <input v-model="dateFrom" @blur="dateFrom = padDate(dateFrom)" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+                    <input v-model="dateFrom" @blur="dateFrom = padDate(dateFrom)" :disabled="isProcessingQueue" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
                   </div>
                   <div class="space-y-2">
                     <span class="text-[10px] uppercase font-black opacity-40">End Date</span>
-                    <input v-model="dateTo" @blur="dateTo = padDate(dateTo)" :disabled="isRunning" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+                    <input v-model="dateTo" @blur="dateTo = padDate(dateTo)" :disabled="isProcessingQueue" type="text" placeholder="YYYY-MM-DD" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
+                  </div>
+                </div>
+              </div>
+
+              <!-- Automation Tab Fields -->
+              <div v-if="activeTab === 'automation'" class="space-y-8 animate-in fade-in slide-in-from-top-2 duration-300">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div class="space-y-3">
+                    <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Recurrence</label>
+                    <select v-model="intervalMinutes" :disabled="isProcessingQueue" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]">
+                      <option :value="1440">Daily</option>
+                      <option :value="10080">Weekly</option>
+                      <option :value="43200">Monthly</option>
+                    </select>
+                  </div>
+                  <div class="space-y-3">
+                    <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Execution Time (UTC)</label>
+                    <div class="relative">
+                      <input 
+                        v-model="scheduledTime" 
+                        type="text" 
+                        placeholder="HH:MM" 
+                        class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)] font-mono"
+                      />
+                      <Clock class="absolute right-4 top-3.5 opacity-20" :size="16" />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -554,69 +684,44 @@ function formatDate(dateStr: string | null): string {
               <div class="space-y-3">
                 <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)]">Debate Depth</label>
                 <div class="flex items-center gap-6">
-                  <input v-model.number="depth" :disabled="isRunning" type="range" min="1" max="5" class="flex-1 accent-[var(--color-accent-primary)]" />
+                  <input v-model.number="depth" :disabled="isProcessingQueue" type="range" min="1" max="5" class="flex-1 accent-[var(--color-accent-primary)]" />
                   <span class="w-10 h-10 flex items-center justify-center bg-[var(--color-bg-elevated)] rounded-lg font-bold border border-[var(--color-border-default)] text-lg">{{ depth }}</span>
                 </div>
                 <p class="text-[10px] text-[var(--color-text-muted)] italic">Higher depth increases reasoning rounds between Bull and Bear agents.</p>
               </div>
             </div>
 
-            <!-- Execution Type -->
-            <div class="pt-6 border-t border-[var(--color-border-default)]">
-              <div class="flex flex-col md:flex-row justify-between gap-4">
-                <div class="space-y-4">
-                  <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-4 block">Execution Strategy</label>
-                  <div class="flex gap-8">
-                    <label class="flex items-center gap-3 cursor-pointer group">
-                      <input type="radio" v-model="executionType" value="now" :disabled="isRunning" class="w-5 h-5 accent-[var(--color-accent-primary)]" />
-                      <div class="flex flex-col">
-                        <span class="text-sm font-bold group-hover:text-[var(--color-accent-primary)] transition-colors">Run Once</span>
-                      </div>
-                    </label>
-                    <label class="flex items-center gap-3 cursor-pointer group">
-                      <input type="radio" v-model="executionType" value="schedule" :disabled="isRunning" class="w-5 h-5 accent-[var(--color-accent-primary)]" />
-                      <div class="flex flex-col">
-                        <span class="text-sm font-bold group-hover:text-[var(--color-accent-primary)] transition-colors">Schedule Recurring</span>
-                      </div>
-                    </label>
-                  </div>
-                </div>
-                
-                <div v-if="executionType === 'schedule'" class="animate-in fade-in slide-in-from-top-2">
-                  <label class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-secondary)] mb-3 block">Interval</label>
-                  <select v-model="intervalMinutes" :disabled="isRunning" class="w-full md:w-48 px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]">
-                    <option :value="60">Hourly</option>
-                    <option :value="1440">Daily</option>
-                    <option :value="10080">Weekly</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
+            <!-- Action Buttons -->
             <div class="pt-8 border-t border-[var(--color-border-default)] flex flex-wrap gap-4">
-              <button
-                v-if="!isRunning"
-                type="submit"
-                :disabled="loading"
-                class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
-              >
-                <RefreshCw v-if="loading" :size="20" class="animate-spin" />
-                <template v-else-if="executionType === 'now'">
-                  <Play :size="20" /> Start Now
-                </template>
-                <template v-else>
-                  <Clock :size="20" /> Save Schedule
-                </template>
-              </button>
+              <template v-if="activeTab === 'research'">
+                <button
+                  v-if="!isRunning"
+                  type="submit"
+                  :disabled="loading"
+                  class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
+                >
+                  <RefreshCw v-if="loading" :size="20" class="animate-spin" />
+                  <Play v-else :size="20" /> Start Now
+                </button>
 
-              <button
-                v-if="!isRunning && executionType === 'now'"
-                type="button"
-                @click="addToQueue"
-                class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-bg-elevated)] hover:bg-opacity-80 border border-[var(--color-border-default)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98]"
-              >
-                Add to Queue
-              </button>
+                <button
+                  type="button"
+                  @click="addToQueue"
+                  class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-bg-elevated)] hover:bg-opacity-80 border border-[var(--color-border-default)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+                >
+                  Add to Queue
+                </button>
+              </template>
+
+              <template v-else>
+                <button
+                  type="submit"
+                  :disabled="loading"
+                  class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
+                >
+                  <Clock :size="20" /> Create Pipeline
+                </button>
+              </template>
 
               <button
                 v-if="isRunning"
@@ -638,12 +743,22 @@ function formatDate(dateStr: string | null): string {
         <div class="bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-2xl p-6 shadow-2xl relative overflow-hidden flex flex-col h-full min-h-[600px]">
           <div class="flex items-center justify-between mb-6">
             <h2 class="text-xl font-bold flex items-center gap-3">
-              <RefreshCw :size="20" class="text-[var(--color-accent-primary)]" :class="{ 'animate-spin': isQueueRunning }" />
+              <RefreshCw v-if="isQueueRunning && !isQueuePaused" :size="20" class="text-[var(--color-accent-primary)] animate-spin" />
+              <Pause v-else-if="isQueuePaused" :size="20" class="text-amber-400" />
+              <RefreshCw v-else :size="20" class="text-[var(--color-accent-primary)]" />
               Research Queue
             </h2>
-            <div class="flex gap-2">
-              <button @click="sweepDepth" :disabled="isRunning || !tickersInput" class="px-2 py-1 bg-black/40 text-[9px] font-black uppercase rounded border border-white/10 hover:bg-black/60 transition-colors">Sweep Depth</button>
-              <button v-if="researchQueue.length > 0" @click="researchQueue = []" class="px-2 py-1 text-[9px] font-black uppercase text-[var(--color-signal-sell)] hover:bg-[var(--color-signal-sell)]/10 rounded transition-colors">Clear</button>
+            <div class="flex gap-2 items-center">
+              <button 
+                v-if="isQueueRunning || researchQueue.length > 0" 
+                @click="handlePauseToggle" 
+                class="px-2 py-1 bg-amber-500/10 text-[9px] font-black uppercase rounded border border-amber-500/20 text-amber-500 hover:bg-amber-500/20 transition-colors flex items-center gap-1"
+              >
+                <Pause v-if="!isQueuePaused" :size="10" />
+                <Play v-else :size="10" />
+                {{ isQueuePaused ? 'Resume' : 'Pause Stack' }}
+              </button>
+              <button @click="sweepDepth" :disabled="isProcessingQueue || !tickersInput" class="px-2 py-1 bg-black/40 text-[9px] font-black uppercase rounded border border-white/10 hover:bg-black/60 transition-colors">Sweep Depth</button>
             </div>
           </div>
 
@@ -654,21 +769,40 @@ function formatDate(dateStr: string | null): string {
           </div>
 
           <div v-else class="flex-1 space-y-3 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar">
-            <div v-for="(job, index) in researchQueue" :key="job.id" class="p-4 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl group relative hover:border-[var(--color-accent-primary)]/50 transition-all">
+            <div 
+              v-for="(job, index) in researchQueue" 
+              :key="job.id" 
+              draggable="true"
+              @dragstart="onDragStart(index)"
+              @dragover="onDragOver"
+              @drop="onDrop(index)"
+              class="p-4 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl group relative hover:border-[var(--color-accent-primary)]/50 transition-all cursor-grab active:cursor-grabbing"
+              :class="{ 'opacity-50 border-dashed': dragIndex === index }"
+            >
               <div class="flex justify-between items-start">
-                <div class="space-y-1">
-                  <div class="flex gap-1">
-                    <span v-for="t in job.tickers" :key="t" class="text-[10px] font-black text-[var(--color-accent-primary)]">{{ t }}</span>
+                <div class="flex items-center gap-3">
+                  <div class="opacity-30 group-hover:opacity-100 transition-opacity">
+                    <GripVertical :size="16" />
                   </div>
-                  <div class="text-[10px] opacity-60 font-mono">{{ job.dateFrom || 'Today' }} → {{ job.dateTo || 'Today' }}</div>
+                  <div class="space-y-1">
+                    <div class="flex gap-1">
+                      <span v-for="t in job.tickers" :key="t" class="text-[10px] font-black text-[var(--color-accent-primary)]">{{ t }}</span>
+                    </div>
+                    <div class="text-[10px] opacity-60 font-mono">{{ job.dateFrom || 'Today' }} → {{ job.dateTo || 'Today' }}</div>
+                  </div>
                 </div>
-                <button @click="removeFromQueue(index)" class="opacity-0 group-hover:opacity-100 p-1 hover:text-[var(--color-signal-sell)] transition-all">
+                <button @click="removeFromQueue(job.id)" class="opacity-0 group-hover:opacity-100 p-1 hover:text-[var(--color-signal-sell)] transition-all">
                   <Trash2 :size="14" />
                 </button>
               </div>
               <div class="mt-3 flex flex-wrap gap-2">
-                <span class="px-2 py-0.5 bg-black/40 text-[8px] font-black rounded border border-white/5">{{ job.quickModel }}</span>
-                <span class="px-2 py-0.5 bg-black/40 text-[8px] font-black rounded border border-white/5">DEPTH {{ job.depth }}</span>
+                <span class="px-2 py-0.5 bg-black/40 text-[8px] font-black rounded border border-white/5 flex items-center gap-1.5">
+                  <span class="opacity-30">Q:</span> {{ job.quickModel }}
+                </span>
+                <span class="px-2 py-0.5 bg-black/40 text-[8px] font-black rounded border border-white/5 flex items-center gap-1.5">
+                  <span class="opacity-30">D:</span> {{ job.deepModel }}
+                </span>
+                <span class="px-2 py-0.5 bg-[var(--color-accent-primary)]/20 text-[var(--color-accent-primary)] text-[8px] font-black rounded border border-[var(--color-accent-primary)]/20">DEPTH {{ job.depth }}</span>
               </div>
             </div>
           </div>
@@ -679,7 +813,7 @@ function formatDate(dateStr: string | null): string {
               :disabled="isRunning || researchQueue.length === 0"
               class="w-full py-4 bg-white text-black font-black uppercase tracking-widest rounded-xl hover:bg-opacity-90 disabled:opacity-30 transition-all flex items-center justify-center gap-3"
             >
-              <Play :size="20" /> Run Research Stack
+              <Play :size="20" /> {{ isQueueRunning ? 'Stack Processing...' : 'Run Research Stack' }}
             </button>
           </div>
         </div>
@@ -704,37 +838,57 @@ function formatDate(dateStr: string | null): string {
                 <th class="px-8 py-5">Assets</th>
                 <th class="px-8 py-5">Recurrence</th>
                 <th class="px-8 py-5">Intelligence</th>
+                <th class="px-8 py-5">Status</th>
                 <th class="px-8 py-5">Next Sequence</th>
                 <th class="px-8 py-5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-[var(--color-border-default)]">
-              <tr v-for="job in schedules" :key="job.id" class="hover:bg-[var(--color-bg-elevated)]/30 transition-colors group">
+              <tr v-for="s in schedules" :key="s.id" class="hover:bg-[var(--color-bg-elevated)]/30 transition-colors group">
                 <td class="px-8 py-5">
                   <div class="flex flex-wrap gap-1.5">
-                    <span v-for="t in job.tickers" :key="t" class="px-3 py-1 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-md text-[10px] font-black text-[var(--color-accent-primary)]">
+                    <span v-for="t in s.tickers" :key="t" class="px-3 py-1 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-md text-[10px] font-black text-[var(--color-accent-primary)]">
                       {{ t }}
                     </span>
                   </div>
                 </td>
                 <td class="px-8 py-5">
-                  <span class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-black/20 rounded-full text-[10px] font-bold border border-white/5">
-                    <Clock :size="12" class="opacity-50" />
-                    {{ job.interval_minutes >= 1440 ? `${job.interval_minutes / 1440} DAY(S)` : `${job.interval_minutes / 60} HOUR(S)` }}
-                  </span>
+                  <div class="flex flex-col gap-1">
+                    <span class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-black/20 rounded-full text-[10px] font-bold border border-white/5 w-fit">
+                      <Clock :size="12" class="opacity-50" />
+                      {{ s.interval_minutes >= 1440 ? `${s.interval_minutes / 1440} DAY(S)` : `${s.interval_minutes / 60} HOUR(S)` }}
+                    </span>
+                    <span v-if="s.scheduled_time" class="text-[10px] font-mono opacity-50 ml-3">@ {{ s.scheduled_time }} UTC</span>
+                  </div>
                 </td>
                 <td class="px-8 py-5">
-                  <span class="text-xs font-medium uppercase opacity-70">{{ job.config.llm_provider }}</span>
+                  <span class="text-xs font-medium uppercase opacity-70">{{ s.config.llm_provider }}</span>
                 </td>
-                <td class="px-8 py-5 font-mono text-xs opacity-60">{{ formatDate(job.next_run) }}</td>
+                <td class="px-8 py-5 font-mono text-[10px]">
+                  <div class="flex flex-col">
+                    <span :class="s.paused ? 'text-amber-400 opacity-50' : 'text-[var(--color-signal-buy)]'">{{ s.paused ? 'PAUSED' : 'ACTIVE' }}</span>
+                    <span class="opacity-50 text-[9px]">{{ s.interval_minutes }} min interval</span>
+                  </div>
+                </td>
+                <td class="px-8 py-5 font-mono text-xs opacity-60">{{ formatDate(s.next_run) }}</td>
                 <td class="px-8 py-5 text-right">
-                  <button
-                    @click="handleDeleteSchedule(job.id)"
-                    class="p-2.5 text-[var(--color-text-muted)] hover:text-[var(--color-signal-sell)] rounded-xl hover:bg-[var(--color-signal-sell)]/10 transition-all opacity-0 group-hover:opacity-100"
-                    title="Terminate Schedule"
-                  >
-                    <Trash2 :size="20" />
-                  </button>
+                  <div class="flex justify-end gap-3">
+                    <button 
+                      @click="handleToggleSchedule(s.id)" 
+                      class="p-2 text-[var(--color-text-muted)] hover:text-[var(--color-accent-primary)] rounded-xl hover:bg-[var(--color-accent-primary)]/10 transition-all opacity-0 group-hover:opacity-100"
+                      :title="s.paused ? 'Resume Pipeline' : 'Pause Pipeline'"
+                    >
+                      <Play v-if="s.paused" :size="20" />
+                      <Pause v-else :size="20" />
+                    </button>
+                    <button
+                      @click="handleDeleteSchedule(s.id)"
+                      class="p-2 text-[var(--color-text-muted)] hover:text-[var(--color-signal-sell)] rounded-xl hover:bg-[var(--color-signal-sell)]/10 transition-all opacity-0 group-hover:opacity-100"
+                      title="Terminate Pipeline"
+                    >
+                      <Trash2 :size="20" />
+                    </button>
+                  </div>
                 </td>
               </tr>
             </tbody>

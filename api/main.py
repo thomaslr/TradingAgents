@@ -47,6 +47,14 @@ app.include_router(memory.router, prefix="/api")
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(scheduler_loop())
+    # Start the Research Queue worker if jobs are pending
+    from api.routes.analysis import start_worker_if_needed
+    from tradingagents.db.registry import RunRegistry
+    from tradingagents.default_config import DEFAULT_CONFIG
+    
+    # We use a dummy background tasks object for the startup call
+    from fastapi import BackgroundTasks
+    start_worker_if_needed(BackgroundTasks(), DEFAULT_CONFIG["db_path"], DEFAULT_CONFIG)
 
 from api.utils.network import ensure_ollama_ready
 
@@ -64,40 +72,31 @@ async def scheduler_loop():
             
             due_jobs = manager.get_due_jobs()
             for job in due_jobs:
-                logging.info(f"Triggering scheduled job {job['id']} for {job['tickers']}")
+                logging.info(f"Adding scheduled job {job['id']} for {job['tickers']} to Research Queue")
                 manager.mark_job_ran(job['id'])
                 
-                # Execute in the background using a thread (since it's blocking)
                 # We use today's date for scheduled runs
                 today = datetime.now().strftime("%Y-%m-%d")
                 
-                # SMART WAKE: If the job uses Ollama, wake the server first
-                if job.get("config", {}).get("llm_provider") == "ollama":
-                    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-                    mac_address = os.getenv("OLLAMA_MAC_ADDRESS")
-                    wake_timeout = int(os.getenv("OLLAMA_WAKE_TIMEOUT", "60"))
-                    
-                    logging.info(f"Scheduled job requires Ollama. Ensuring server is ready...")
-                    await ensure_ollama_ready(ollama_url, mac_address, wake_timeout)
-
-                # We need a new registry per job
+                # To address duplicate runs for the same ticker/date, 
+                # we use force=True to ensure it overwrites.
                 from tradingagents.db.registry import RunRegistry
                 registry = RunRegistry(db_path)
                 try:
-                    # To address duplicate runs for the same ticker/date, 
-                    # we use force=True to ensure it overwrites.
-                    from cli.batch_runner import run_batch_analysis
-                    await asyncio.to_thread(
-                        run_batch_analysis,
-                        tickers=job["tickers"],
-                        dates=[today],
-                        config=job["config"],
-                        registry=registry,
-                        skip_completed=False,
-                        force=True
-                    )
+                    job_data = {
+                        "id": f"sch_{job['id']}_{today}",
+                        "tickers": job["tickers"],
+                        "dates": [today],
+                        "provider": job["config"].get("llm_provider", "openai"),
+                        "quick_model": job["config"].get("quick_think_llm", ""),
+                        "deep_model": job["config"].get("deep_think_llm", ""),
+                        "depth": job["config"].get("max_debate_rounds", 1),
+                        "force": True
+                    }
+                    # Add to queue with priority=True to bump to top
+                    registry.add_to_queue(job_data, priority=True)
                 except Exception as e:
-                    logging.error(f"Scheduled job {job['id']} failed: {e}")
+                    logging.error(f"Failed to queue scheduled job {job['id']}: {e}")
                 finally:
                     registry.close()
         except Exception as e:
