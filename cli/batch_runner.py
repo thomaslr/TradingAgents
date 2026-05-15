@@ -70,6 +70,7 @@ class StatusTracker(BaseCallbackHandler):
         self.progress = progress
         self.task_id = task_id
         self.external_status_callback = None
+        self.current_node = ""
 
     def on_chain_start(self, serialized, inputs, **kwargs):
         """Update status when a new node/chain starts."""
@@ -95,6 +96,7 @@ class StatusTracker(BaseCallbackHandler):
             status_msg = "Finalizing Decision"
 
         if status_msg:
+            self.current_node = status_msg
             self.progress.update(self.task_id, status=f"[yellow]{status_msg}[/yellow]")
             if self.external_status_callback:
                 self.external_status_callback(status_msg)
@@ -120,7 +122,10 @@ class StatusTracker(BaseCallbackHandler):
         
         if self.external_status_callback:
             # We send a special prefixed message that the UI can handle or just display
-            self.external_status_callback(thought_msg)
+            if self.current_node:
+                self.external_status_callback(f"{self.current_node} - {thought_msg}")
+            else:
+                self.external_status_callback(thought_msg)
 
 
 def _expand_dates(date_from: str, date_to: str) -> List[str]:

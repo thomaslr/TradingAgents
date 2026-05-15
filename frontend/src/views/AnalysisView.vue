@@ -141,11 +141,12 @@ async function checkStatus() {
          isQueueRunning.value = true
       }
 
-      // Filter sub_status out of the thought stream if it's the high-level step
-      // (This prevents redundant [Market Analyst]: Market Analyst messages)
+      // Extract the thought stream text if it contains the tool executing prefix
       const msg = status.job.sub_status || ''
-      if (msg.startsWith('Executing:')) {
-        thoughtStreamText.value = msg
+      if (msg.includes('Executing:')) {
+        thoughtStreamText.value = msg.substring(msg.indexOf('Executing:'))
+      } else if (msg && !msg.includes('Executing:')) {
+        thoughtStreamText.value = 'Analyzing data...'
       }
 
       // Calculate Token Rates (every ~5s)
