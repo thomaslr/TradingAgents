@@ -69,17 +69,32 @@ class StatusTracker(BaseCallbackHandler):
     def __init__(self, progress, task_id):
         self.progress = progress
         self.task_id = task_id
+        self.external_status_callback = None
 
     def on_chain_start(self, serialized, inputs, **kwargs):
         """Update status when a new node/chain starts."""
         name = serialized.get("name") or "Agent"
-        if name in ["market_analyst_node", "sentiment_analyst_node", "news_analyst_node", "fundamentals_analyst_node"]:
-            status = name.replace("_node", "").replace("_", " ").title()
-            self.progress.update(self.task_id, status=f"[yellow]{status}[/yellow]")
-        elif "debate" in name.lower():
-            self.progress.update(self.task_id, status="[orange1]Debating[/orange1]")
-        elif "trader" in name.lower():
+        status_msg = ""
+        
+        # Match names from trading_graph setup.py
+        if any(x in name for x in ["Market Analyst", "Social Analyst", "News Analyst", "Fundamentals Analyst"]):
+            status_msg = name
+            self.progress.update(self.task_id, status=f"[yellow]{status_msg}[/yellow]")
+        elif "Researcher" in name or "Research Manager" in name:
+            # Try to determine the round number from the inputs
+            history = inputs.get("investment_debate_state", {}).get("history") or []
+            round_num = (len(history) // 2) + 1
+            status_msg = f"Debating (Round {round_num})"
+            self.progress.update(self.task_id, status=f"[orange1]{status_msg}[/orange1]")
+        elif "Trader" in name:
+            status_msg = "Planning Trade"
             self.progress.update(self.task_id, status="[cyan]Planning Trade[/cyan]")
+        elif "Portfolio Manager" in name:
+            status_msg = "Finalizing Decision"
+            self.progress.update(self.task_id, status="[bold green]Finalizing[/bold green]")
+
+        if self.external_status_callback and status_msg:
+            self.external_status_callback(status_msg)
 
 
 def _expand_dates(date_from: str, date_to: str) -> List[str]:
@@ -189,6 +204,7 @@ def run_batch_analysis(
     abort_event: Optional[threading.Event] = None,
     progress_callback: Optional[Callable[[str, str], None]] = None,
     token_callback: Optional[Callable[[int, int], None]] = None,
+    status_callback: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Execute batch analysis sequentially.
 
@@ -296,6 +312,9 @@ def run_batch_analysis(
                         tracker.external_callback = token_callback
                         
                     status_cb = StatusTracker(progress, task)
+                    if status_callback:
+                        status_cb.external_status_callback = status_callback
+                        
                     graph = TradingAgentsGraph(
                         ALL_ANALYSTS,
                         config=config,

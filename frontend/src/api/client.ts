@@ -127,6 +127,11 @@ export async function yieldAnalysis() {
   return data
 }
 
+export async function purgeAnalysis() {
+  const { data } = await api.post('/analysis/purge')
+  return data
+}
+
 export async function fetchAnalysisStatus(): Promise<{ 
   running: boolean, 
   job: any, 

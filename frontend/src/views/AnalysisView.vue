@@ -17,10 +17,11 @@ import {
   startAnalysis,
   stopAnalysis,
   yieldAnalysis,
+  purgeAnalysis,
   addSchedule,
   type ScheduleJob 
 } from '../api/client'
-import { Play, Pause, Square, Clock, Trash2, CheckCircle, RefreshCw, AlertCircle, GripVertical, Settings2, Zap, ArrowUp } from 'lucide-vue-next'
+import { Play, Pause, Square, Clock, Trash2, CheckCircle, RefreshCw, AlertCircle, GripVertical, Settings2, Zap, ArrowUp, AlertTriangle } from 'lucide-vue-next'
 
 // interface QueuedJob deleted
 
@@ -46,6 +47,17 @@ const activeJobMessage = ref<string | null>(null)
 const isProcessingQueue = ref(false)
 let statusPolling: any = null
 const launchWatchdog = ref(0)
+const runningJob = ref<any>(null)
+const showDeepIntel = ref(false)
+
+const pipelineSteps = [
+  'Market Analyst',
+  'Social Analyst',
+  'News Analyst',
+  'Fundamentals Analyst',
+  'Debating',
+  'Finalizing Decision'
+]
 
 // Token Tracking State
 const lastInputTokens = ref(0)
@@ -104,7 +116,12 @@ async function checkStatus() {
        loadQueue()
     }
 
+    if (!status.running) {
+      isStopping.value = false
+    }
+
     if (status.running && status.job) {
+      runningJob.value = status.job
       isProcessingQueue.value = false // We've confirmed it's running
       activeConfig.value = status.job.config
       activeJobMessage.value = status.job.status_message
@@ -114,7 +131,9 @@ async function checkStatus() {
         : `Initializing...`
         
       currentJobParams.value = `${current} | Batch: ${tickers}`
-      successMessage.value = `Analysis in progress...`
+      if (!isStopping.value) {
+        successMessage.value = `Analysis in progress...`
+      }
       
       // If backend has a job ID, we are likely in a queue run
       if (status.job.id) {
@@ -274,14 +293,24 @@ const promoteToActive = async (jobId: string) => {
   }
 }
 
-async function handleStop() {
-  isStopping.value = true
-  try {
+const handleStop = async () => {
+  if (isRunning.value) {
+    isStopping.value = true
+    successMessage.value = "Stopping... (Finishing current agent thought)"
     await stopAnalysis()
-    successMessage.value = 'Stopping... (Finishing current agent thought)'
-  } catch (e: any) {
-    error.value = e.message || 'Failed to stop analysis'
-    isStopping.value = false
+  }
+}
+
+const handlePurge = async () => {
+  if (!confirm("NUCLEAR OPTION: This will stop the analysis, CLEAR the research queue, and WIPE all on-disk checkpoints. Use only if system is stuck. Proceed?")) return
+  
+  try {
+    const res = await purgeAnalysis()
+    successMessage.value = res.message
+    loadQueue()
+    checkStatus()
+  } catch (error) {
+    console.error('Error purging system:', error)
   }
 }
 
@@ -576,16 +605,17 @@ function formatDate(dateStr: string | null): string {
         </div>
       </div>
       
-      <div v-if="isQueueRunning" class="z-10 flex flex-col items-end gap-3 min-w-[140px]">
-        <!-- Queue Status Pill -->
-        <div class="px-6 py-2 bg-black/80 rounded-xl border border-white/20 flex flex-col items-center shadow-2xl backdrop-blur-md w-full">
+      <div v-if="isRunning || isQueueRunning" class="z-10 flex flex-col items-end gap-3 min-w-[140px]">
+        <!-- Queue Status Pill (Only if queue is actually active) -->
+        <div v-if="isQueueRunning" class="px-6 py-2 bg-black/80 rounded-xl border border-white/20 flex flex-col items-center shadow-2xl backdrop-blur-md w-full">
           <span class="text-[9px] font-black text-yellow-400 uppercase tracking-tighter opacity-70">QUEUE</span>
           <span class="text-lg font-black text-white leading-tight">{{ researchQueue.length }} LEFT</span>
         </div>
 
-        <!-- Action Buttons (Yield/Stop) directly under Queue -->
-        <div v-if="isRunning" class="flex gap-2 w-full justify-end">
+        <!-- Action Buttons (Yield/Stop) -->
+        <div class="flex gap-2 w-full justify-end">
           <button 
+            v-if="isQueueRunning"
             @click="handleYield"
             class="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-black/60 hover:bg-black/80 text-yellow-400 border border-yellow-400/30 rounded-lg transition-all font-black text-[10px] uppercase tracking-wider"
             title="Finish current day and move to queue"
@@ -602,6 +632,84 @@ function formatDate(dateStr: string | null): string {
             STOP
           </button>
         </div>
+
+        <!-- Deep Intel Toggle -->
+        <div v-if="isRunning" class="mt-4 flex justify-center">
+          <button 
+            @click="showDeepIntel = !showDeepIntel"
+            class="group flex items-center gap-2 px-4 py-1.5 bg-black/40 hover:bg-black/60 text-white/60 hover:text-white rounded-full transition-all border border-white/5"
+          >
+            <div :class="showDeepIntel ? 'rotate-180' : ''" class="transition-transform duration-300">
+              <Settings2 :size="12" />
+            </div>
+            <span class="text-[9px] font-black uppercase tracking-widest">{{ showDeepIntel ? 'Hide Deep Intel' : 'Show Deep Intel' }}</span>
+          </button>
+        </div>
+
+        <!-- Deep Intel Collapsible Section -->
+        <div v-if="isRunning && showDeepIntel" class="mt-4 p-5 bg-black/60 rounded-xl border border-white/10 shadow-inner overflow-hidden">
+          <div class="flex flex-col gap-6">
+            <!-- Pipeline Timeline -->
+            <div class="flex justify-between items-start gap-2 relative">
+              <div class="absolute top-2.5 left-4 right-4 h-[1px] bg-white/10 z-0"></div>
+              
+              <div v-for="step in pipelineSteps" :key="step" class="z-10 flex flex-col items-center gap-2 flex-1">
+                <div 
+                  class="w-5 h-5 rounded-full flex items-center justify-center border-2 transition-all duration-500"
+                  :class="[
+                    runningJob?.sub_status?.includes(step) ? 'bg-yellow-400 border-yellow-400 shadow-[0_0_15px_rgba(250,204,21,0.5)]' : 
+                    (pipelineSteps.indexOf(step) < pipelineSteps.findIndex(s => runningJob?.sub_status?.includes(s)) ? 'bg-green-500 border-green-500' : 'bg-black border-white/20')
+                  ]"
+                >
+                  <CheckCircle v-if="pipelineSteps.indexOf(step) < pipelineSteps.findIndex(s => runningJob?.sub_status?.includes(s))" :size="10" class="text-white" />
+                </div>
+                <span 
+                  class="text-[8px] font-black uppercase tracking-tight text-center transition-colors"
+                  :class="runningJob?.sub_status?.includes(step) ? 'text-yellow-400' : 'text-white/40'"
+                >
+                  {{ step }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Detailed Status & Reasoning Stream -->
+            <div class="p-4 bg-black/40 rounded-lg border border-white/5 flex flex-col gap-3">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-white/80">
+                  <div class="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse"></div>
+                  Internal Thought Stream
+                </div>
+                <div v-if="runningJob?.sub_status?.includes('Debating')" class="px-2 py-0.5 bg-yellow-400/20 text-yellow-400 text-[9px] font-black rounded border border-yellow-400/30">
+                  {{ runningJob.sub_status }}
+                </div>
+              </div>
+              
+              <div class="font-mono text-[11px] text-white/70 leading-relaxed italic">
+                <span v-if="runningJob?.sub_status" class="text-yellow-400 font-bold">[{{ runningJob.sub_status }}]:</span>
+                Searching for latest market signals and weighing analyst consensus...
+              </div>
+
+              <!-- Emergency Purge Action -->
+              <div class="mt-4 pt-4 border-t border-red-500/10 flex justify-between items-center">
+                <div class="text-[9px] text-red-400 font-bold flex items-center gap-2">
+                  <AlertTriangle :size="12" />
+                  SYSTEM STUCK? BREAK THE LOOP WITH NUCLEAR RESET
+                </div>
+                <button 
+                  @click="handlePurge"
+                  class="px-3 py-1.5 bg-red-600/20 hover:bg-red-600 text-red-500 hover:text-white border border-red-500/30 rounded-lg transition-all font-black text-[9px] uppercase tracking-widest"
+                >
+                  Nuclear Reset
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dynamic Background Watermark -->
+      <div v-if="isRunning" class="absolute bottom-4 right-8 opacity-[0.03] pointer-events-none text-[80px] font-black select-none z-0 overflow-hidden whitespace-nowrap uppercase tracking-tighter">
+        {{ runningJob?.sub_status || 'RESEARCH' }}
       </div>
     </div>
 

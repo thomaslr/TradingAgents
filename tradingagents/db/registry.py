@@ -527,6 +527,11 @@ class RunRegistry:
         self.conn.execute("DELETE FROM research_queue WHERE id = ?", (job_id,))
         self.conn.commit()
 
+    def clear_queue(self):
+        """Nuclear wipe of the entire research queue."""
+        self.conn.execute("DELETE FROM research_queue")
+        self.conn.commit()
+
     def update_queue_status(self, job_id: str, status: str, error: Optional[str] = None):
         """Update job lifecycle state."""
         now = _now_iso()
