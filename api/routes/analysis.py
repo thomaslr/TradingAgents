@@ -2,11 +2,11 @@ from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
-import threading
 import sys
 import os
 from datetime import datetime
 from pathlib import Path
+import multiprocessing
 
 from api.dependencies import get_registry, get_config
 from tradingagents.db.registry import RunRegistry
@@ -19,17 +19,45 @@ router = APIRouter(prefix="/analysis", tags=["Analysis"])
 # ── Global Task Management ──────────────────────────────────────────
 
 class AnalysisTaskState:
-    """Manages the lifecycle and cancellation of background analysis jobs."""
+    """Manages the lifecycle and cancellation of background analysis jobs using multiprocessing."""
     def __init__(self):
-        self.active_job: Optional[Dict[str, Any]] = None
-        self.active_job_id: Optional[str] = None
-        self.last_error = None
-        self.status_message: Optional[str] = None
-        self.abort_event = threading.Event()
-        self.lock = threading.Lock()
-        self.worker_thread: Optional[threading.Thread] = None
-        self.is_paused = False
-        self.yield_requested = False
+        self.manager = multiprocessing.Manager()
+        self._shared_data = self.manager.dict({
+            "active_job": None,
+            "active_job_id": None,
+            "last_error": None,
+            "is_paused": False,
+            "yield_requested": False
+        })
+        self.abort_event = multiprocessing.Event()
+        self.lock = multiprocessing.Lock()
+        self.worker_process: Optional[multiprocessing.Process] = None
+        self.worker_thread: Optional[multiprocessing.Process] = None # For compatibility with old variable names if any
+
+    @property
+    def active_job(self): return self._shared_data["active_job"]
+    @active_job.setter
+    def active_job(self, val): self._shared_data["active_job"] = val
+
+    @property
+    def active_job_id(self): return self._shared_data["active_job_id"]
+    @active_job_id.setter
+    def active_job_id(self, val): self._shared_data["active_job_id"] = val
+
+    @property
+    def last_error(self): return self._shared_data["last_error"]
+    @last_error.setter
+    def last_error(self, val): self._shared_data["last_error"] = val
+
+    @property
+    def is_paused(self): return self._shared_data["is_paused"]
+    @is_paused.setter
+    def is_paused(self, val): self._shared_data["is_paused"] = val
+
+    @property
+    def yield_requested(self): return self._shared_data["yield_requested"]
+    @yield_requested.setter
+    def yield_requested(self, val): self._shared_data["yield_requested"] = val
 
     def start_job(self, tickers: List[str], dates: List[str], config: dict, job_id: Optional[str] = None):
         with self.lock:
@@ -236,13 +264,13 @@ def run_queue_worker(db_path: str, base_config: dict):
 def start_worker_if_needed(background_tasks: BackgroundTasks, db_path: str, config: dict):
     """Ensures the background worker is running."""
     with task_state.lock:
-        if task_state.worker_thread is None or not task_state.worker_thread.is_alive():
-            task_state.worker_thread = threading.Thread(
+        if task_state.worker_process is None or not task_state.worker_process.is_alive():
+            task_state.worker_process = multiprocessing.Process(
                 target=run_queue_worker, 
                 args=(db_path, config),
                 daemon=True
             )
-            task_state.worker_thread.start()
+            task_state.worker_process.start()
 
 # ── Endpoints ────────────────────────────────────────────────────────
 
@@ -305,7 +333,13 @@ def start_batch_analysis(request: AnalysisRequest, background_tasks: BackgroundT
     if task_state.is_running():
         raise HTTPException(status_code=400, detail="Job already running.")
     task_state.start_job(request.tickers, request.dates, config)
-    background_tasks.add_task(execute_analysis_task, request, config, registry.db_path)
+    proc = multiprocessing.Process(
+        target=execute_analysis_task,
+        args=(request, config, registry.db_path),
+        daemon=True
+    )
+    proc.start()
+    task_state.worker_process = proc
     return {"status": "accepted"}
 
 @router.get("/status")
@@ -335,6 +369,10 @@ def yield_analysis():
 async def purge_analysis(registry: RunRegistry = Depends(get_registry)):
     task_state.abort_event.set()
     with task_state.lock:
+        if task_state.worker_process and task_state.worker_process.is_alive():
+            task_state.worker_process.terminate()
+            task_state.worker_process.join(timeout=2)
+        
         registry.clear_queue()
         cache_dir = os.environ.get("TRADINGAGENTS_CACHE_DIR", "data/cache")
         if os.path.exists(cache_dir):
