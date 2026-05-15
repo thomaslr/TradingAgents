@@ -596,6 +596,19 @@ function formatDate(dateStr: string | null): string {
             <span class="text-yellow-400">THROUGHPUT</span>
             <span class="text-blue-400">{{ inputTokensPerSec }}ᵢ</span> / <span class="text-cyan-400">{{ outputTokensPerSec }}ₒ</span> <small class="text-white/40 ml-1">tps</small>
           </div>
+          <!-- Deep Intel Toggle (Moved to Left) -->
+          <div v-if="isRunning" class="mt-4 flex">
+            <button 
+              @click="showDeepIntel = !showDeepIntel"
+              type="button"
+              class="group flex items-center gap-2 px-4 py-1.5 bg-black/40 hover:bg-black/60 text-white/60 hover:text-white rounded-full transition-all border border-white/5"
+            >
+              <div :class="showDeepIntel ? 'rotate-180' : ''" class="transition-transform duration-300">
+                <Settings2 :size="12" />
+              </div>
+              <span class="text-[9px] font-black uppercase tracking-widest">{{ showDeepIntel ? 'Hide Deep Intel' : 'Show Deep Intel' }}</span>
+            </button>
+          </div>
         </div>
 
         <!-- Network / WOL Status -->
@@ -633,85 +646,82 @@ function formatDate(dateStr: string | null): string {
           </button>
         </div>
 
-        <!-- Deep Intel Toggle -->
-        <div v-if="isRunning" class="mt-4 flex justify-center">
-          <button 
-            @click="showDeepIntel = !showDeepIntel"
-            class="group flex items-center gap-2 px-4 py-1.5 bg-black/40 hover:bg-black/60 text-white/60 hover:text-white rounded-full transition-all border border-white/5"
-          >
-            <div :class="showDeepIntel ? 'rotate-180' : ''" class="transition-transform duration-300">
-              <Settings2 :size="12" />
-            </div>
-            <span class="text-[9px] font-black uppercase tracking-widest">{{ showDeepIntel ? 'Hide Deep Intel' : 'Show Deep Intel' }}</span>
-          </button>
-        </div>
-
-        <!-- Deep Intel Collapsible Section -->
-        <div v-if="isRunning && showDeepIntel" class="mt-4 p-5 bg-black/60 rounded-xl border border-white/10 shadow-inner overflow-hidden">
-          <div class="flex flex-col gap-6">
-            <!-- Pipeline Timeline -->
-            <div class="flex justify-between items-start gap-2 relative">
-              <div class="absolute top-2.5 left-4 right-4 h-[1px] bg-white/10 z-0"></div>
-              
-              <div v-for="step in pipelineSteps" :key="step" class="z-10 flex flex-col items-center gap-2 flex-1">
-                <div 
-                  class="w-5 h-5 rounded-full flex items-center justify-center border-2 transition-all duration-500"
-                  :class="[
-                    runningJob?.sub_status?.includes(step) ? 'bg-yellow-400 border-yellow-400 shadow-[0_0_15px_rgba(250,204,21,0.5)]' : 
-                    (pipelineSteps.indexOf(step) < pipelineSteps.findIndex(s => runningJob?.sub_status?.includes(s)) ? 'bg-green-500 border-green-500' : 'bg-black border-white/20')
-                  ]"
-                >
-                  <CheckCircle v-if="pipelineSteps.indexOf(step) < pipelineSteps.findIndex(s => runningJob?.sub_status?.includes(s))" :size="10" class="text-white" />
-                </div>
-                <span 
-                  class="text-[8px] font-black uppercase tracking-tight text-center transition-colors"
-                  :class="runningJob?.sub_status?.includes(step) ? 'text-yellow-400' : 'text-white/40'"
-                >
-                  {{ step }}
-                </span>
-              </div>
-            </div>
-
-            <!-- Detailed Status & Reasoning Stream -->
-            <div class="p-4 bg-black/40 rounded-lg border border-white/5 flex flex-col gap-3">
-              <div class="flex items-center justify-between">
-                <div class="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-white/80">
-                  <div class="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse"></div>
-                  Internal Thought Stream
-                </div>
-                <div v-if="runningJob?.sub_status?.includes('Debating')" class="px-2 py-0.5 bg-yellow-400/20 text-yellow-400 text-[9px] font-black rounded border border-yellow-400/30">
-                  {{ runningJob.sub_status }}
-                </div>
-              </div>
-              
-              <div class="font-mono text-[11px] text-white/70 leading-relaxed italic">
-                <span v-if="runningJob?.sub_status" class="text-yellow-400 font-bold">[{{ runningJob.sub_status }}]:</span>
-                Searching for latest market signals and weighing analyst consensus...
-              </div>
-
-              <!-- Emergency Purge Action -->
-              <div class="mt-4 pt-4 border-t border-red-500/10 flex justify-between items-center">
-                <div class="text-[9px] text-red-400 font-bold flex items-center gap-2">
-                  <AlertTriangle :size="12" />
-                  SYSTEM STUCK? BREAK THE LOOP WITH NUCLEAR RESET
-                </div>
-                <button 
-                  @click="handlePurge"
-                  class="px-3 py-1.5 bg-red-600/20 hover:bg-red-600 text-red-500 hover:text-white border border-red-500/30 rounded-lg transition-all font-black text-[9px] uppercase tracking-widest"
-                >
-                  Nuclear Reset
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
 
-      <!-- Dynamic Background Watermark -->
       <div v-if="isRunning" class="absolute bottom-4 right-8 opacity-[0.03] pointer-events-none text-[80px] font-black select-none z-0 overflow-hidden whitespace-nowrap uppercase tracking-tighter">
         {{ runningJob?.sub_status || 'RESEARCH' }}
       </div>
     </div>
+
+    <!-- Deep Intel Section (Separate Full-Width Card Below) -->
+    <transition
+      enter-active-class="transition duration-500 ease-out"
+      enter-from-class="transform -translate-y-4 opacity-0"
+      enter-to-class="transform translate-y-0 opacity-100"
+      leave-active-class="transition duration-300 ease-in"
+      leave-from-class="transform translate-y-0 opacity-100"
+      leave-to-class="transform -translate-y-4 opacity-0"
+    >
+      <div v-if="isRunning && showDeepIntel" class="p-8 bg-black/40 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl overflow-hidden">
+        <div class="flex flex-col gap-8">
+          <!-- Pipeline Timeline -->
+          <div class="flex justify-between items-start gap-2 relative px-4">
+            <div class="absolute top-2.5 left-10 right-10 h-[1px] bg-white/10 z-0"></div>
+            
+            <div v-for="step in pipelineSteps" :key="step" class="z-10 flex flex-col items-center gap-3 flex-1">
+              <div 
+                class="w-6 h-6 rounded-full flex items-center justify-center border-2 transition-all duration-700"
+                :class="[
+                  runningJob?.sub_status?.includes(step) ? 'bg-yellow-400 border-yellow-400 shadow-[0_0_20px_rgba(250,204,21,0.6)] scale-110' : 
+                  (pipelineSteps.indexOf(step) < pipelineSteps.findIndex(s => runningJob?.sub_status?.includes(s)) ? 'bg-green-500 border-green-500' : 'bg-black border-white/20')
+                ]"
+              >
+                <CheckCircle v-if="pipelineSteps.indexOf(step) < pipelineSteps.findIndex(s => runningJob?.sub_status?.includes(s))" :size="12" class="text-white" />
+                <div v-else-if="runningJob?.sub_status?.includes(step)" class="w-2 h-2 bg-black rounded-full animate-ping"></div>
+              </div>
+              <span 
+                class="text-[10px] font-black uppercase tracking-widest text-center transition-colors duration-500"
+                :class="runningJob?.sub_status?.includes(step) ? 'text-yellow-400' : 'text-white/40'"
+              >
+                {{ step }}
+              </span>
+            </div>
+          </div>
+
+          <!-- Detailed Status & Reasoning Stream -->
+          <div class="p-6 bg-black/40 rounded-xl border border-white/5 flex flex-col gap-4 shadow-inner">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/80">
+                <div class="w-2 h-2 rounded-full bg-yellow-400 animate-pulse shadow-[0_0_8px_rgba(250,204,21,0.8)]"></div>
+                Internal Thought Stream
+              </div>
+              <div v-if="runningJob?.sub_status?.includes('Debating')" class="px-3 py-1 bg-yellow-400/10 text-yellow-400 text-[10px] font-black rounded-full border border-yellow-400/20">
+                {{ runningJob.sub_status }}
+              </div>
+            </div>
+            
+            <div class="font-mono text-[13px] text-white/80 leading-relaxed italic bg-black/20 p-4 rounded-lg border border-white/5">
+              <span v-if="runningJob?.sub_status" class="text-yellow-400 font-bold mr-2">[{{ runningJob.sub_status }}]:</span>
+              {{ thoughtStreamText || 'Searching for latest market signals and weighing analyst consensus...' }}
+            </div>
+
+            <!-- Emergency Purge Action -->
+            <div class="mt-4 pt-6 border-t border-red-500/10 flex justify-between items-center">
+              <div class="text-[10px] text-red-400/70 font-bold flex items-center gap-3 bg-red-400/5 px-4 py-2 rounded-lg border border-red-400/10">
+                <AlertTriangle :size="14" />
+                <span class="uppercase tracking-widest">System stuck? Break the loop with Nuclear Reset</span>
+              </div>
+              <button 
+                @click="handlePurge"
+                class="px-6 py-2 bg-red-600/10 hover:bg-red-600 text-red-500 hover:text-white border border-red-500/20 rounded-xl transition-all font-black text-[10px] uppercase tracking-widest shadow-lg"
+              >
+                Nuclear Reset
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
 
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
       <!-- Left Column: Config -->
