@@ -49,6 +49,7 @@ let statusPolling: any = null
 const launchWatchdog = ref(0)
 const runningJob = ref<any>(null)
 const showDeepIntel = ref(false)
+const thoughtStreamText = ref('')
 
 const pipelineSteps = [
   'Market Analyst',
@@ -138,6 +139,13 @@ async function checkStatus() {
       // If backend has a job ID, we are likely in a queue run
       if (status.job.id) {
          isQueueRunning.value = true
+      }
+
+      // Filter sub_status out of the thought stream if it's the high-level step
+      // (This prevents redundant [Market Analyst]: Market Analyst messages)
+      const msg = status.job.sub_status || ''
+      if (msg.startsWith('Executing:')) {
+        thoughtStreamText.value = msg
       }
 
       // Calculate Token Rates (every ~5s)
