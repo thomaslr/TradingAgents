@@ -73,28 +73,54 @@ class StatusTracker(BaseCallbackHandler):
 
     def on_chain_start(self, serialized, inputs, **kwargs):
         """Update status when a new node/chain starts."""
-        name = serialized.get("name") or "Agent"
+        # LangGraph nodes often put their name in metadata or tags
+        name = serialized.get("name") or ""
+        tags = kwargs.get("tags") or []
+        metadata = kwargs.get("metadata") or {}
+        node_name = metadata.get("langgraph_node") or name
+
         status_msg = ""
         
         # Match names from trading_graph setup.py
-        if any(x in name for x in ["Market Analyst", "Social Analyst", "News Analyst", "Fundamentals Analyst"]):
-            status_msg = name
-            self.progress.update(self.task_id, status=f"[yellow]{status_msg}[/yellow]")
-        elif "Researcher" in name or "Research Manager" in name:
+        if any(x in node_name for x in ["Market Analyst", "Social Analyst", "News Analyst", "Fundamentals Analyst"]):
+            status_msg = node_name
+        elif any(x in node_name for x in ["Researcher", "Debator"]):
             # Try to determine the round number from the inputs
             history = inputs.get("investment_debate_state", {}).get("history") or []
             round_num = (len(history) // 2) + 1
             status_msg = f"Debating (Round {round_num})"
-            self.progress.update(self.task_id, status=f"[orange1]{status_msg}[/orange1]")
-        elif "Trader" in name:
+        elif "Trader" in node_name:
             status_msg = "Planning Trade"
-            self.progress.update(self.task_id, status="[cyan]Planning Trade[/cyan]")
-        elif "Portfolio Manager" in name:
+        elif "Portfolio Manager" in node_name:
             status_msg = "Finalizing Decision"
-            self.progress.update(self.task_id, status="[bold green]Finalizing[/bold green]")
 
-        if self.external_status_callback and status_msg:
-            self.external_status_callback(status_msg)
+        if status_msg:
+            self.progress.update(self.task_id, status=f"[yellow]{status_msg}[/yellow]")
+            if self.external_status_callback:
+                self.external_status_callback(status_msg)
+
+    def on_tool_start(self, serialized, input_str, **kwargs):
+        """Update the thought stream when a tool is called."""
+        tool_name = serialized.get("name") or "Tool"
+        friendly_names = {
+            "get_stock_data": "Fetching historical price data",
+            "get_indicators": "Calculating technical indicators (RSI, MACD, etc)",
+            "get_news": "Scanning recent news headlines",
+            "get_global_news": "Analyzing global macro events",
+            "get_fundamentals": "Reviewing company fundamentals",
+            "get_balance_sheet": "Analyzing balance sheet health",
+            "get_cashflow": "Evaluating cash flow statement",
+            "get_income_statement": "Checking income statement performance",
+            "get_insider_transactions": "Checking insider trading activity"
+        }
+        action = friendly_names.get(tool_name, f"Running {tool_name}")
+        
+        # We prefix it with the tool name for the thought stream
+        thought_msg = f"Executing: {action}..."
+        
+        if self.external_status_callback:
+            # We send a special prefixed message that the UI can handle or just display
+            self.external_status_callback(thought_msg)
 
 
 def _expand_dates(date_from: str, date_to: str) -> List[str]:
