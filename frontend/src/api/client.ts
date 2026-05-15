@@ -122,6 +122,11 @@ export async function stopAnalysis() {
   return data
 }
 
+export async function yieldAnalysis() {
+  const { data } = await api.post('/analysis/yield')
+  return data
+}
+
 export async function fetchAnalysisStatus(): Promise<{ 
   running: boolean, 
   job: any, 

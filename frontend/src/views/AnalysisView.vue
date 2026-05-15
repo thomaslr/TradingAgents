@@ -16,10 +16,11 @@ import {
   deleteSchedule,
   startAnalysis,
   stopAnalysis,
+  yieldAnalysis,
   addSchedule,
   type ScheduleJob 
 } from '../api/client'
-import { Play, Pause, Square, Clock, Trash2, CheckCircle, RefreshCw, AlertCircle, GripVertical, Settings2, Zap } from 'lucide-vue-next'
+import { Play, Pause, Square, Clock, Trash2, CheckCircle, RefreshCw, AlertCircle, GripVertical, Settings2, Zap, ArrowUp } from 'lucide-vue-next'
 
 // interface QueuedJob deleted
 
@@ -237,6 +238,39 @@ async function loadSchedules() {
     console.error(e)
   } finally {
     loading.value = false
+  }
+}
+
+const handleYield = async () => {
+  try {
+    await yieldAnalysis()
+    successMessage.value = "Yield requested. Job will move back to queue after current day."
+    checkStatus()
+  } catch (error) {
+    console.error('Error yielding analysis:', error)
+  }
+}
+
+const promoteToActive = async (jobId: string) => {
+  try {
+    // 1. Move this job to the top of the queue
+    const otherIds = researchQueue.value.filter(j => j.id !== jobId).map(j => j.id)
+    const newOrder = [jobId, ...otherIds]
+    await reorderResearchQueue(newOrder)
+    
+    // 2. If a job is running, yield it
+    if (isRunning.value) {
+      await yieldAnalysis()
+      successMessage.value = "Promoting job. Current analysis will yield after finishing its current day."
+    } else {
+      // Just signal to start if not running
+      await startResearchQueue()
+    }
+    
+    loadQueue()
+    checkStatus()
+  } catch (error) {
+    console.error('Error promoting job:', error)
   }
 }
 
@@ -499,7 +533,6 @@ function formatDate(dateStr: string | null): string {
           <span class="font-black text-xs uppercase tracking-[0.2em]" :class="(isRunning || isQueueRunning) ? (isQueuePaused ? 'text-amber-400' : 'text-[var(--color-signal-buy)]') : 'text-blue-400'">
             {{ isQueuePaused ? 'SYSTEM PAUSED' : ((isRunning || isQueueRunning) ? 'SYSTEM ACTIVE' : 'SYSTEM STATUS') }}
           </span>
-          <span v-if="isRunning || isQueueRunning" class="text-[10px] font-mono opacity-50">RESEARCH RUN IN PROGRESS</span>
         </div>
         <div class="flex items-center gap-4 mb-2">
           <div class="text-white font-black text-xl">{{ successMessage }}</div>
@@ -509,7 +542,7 @@ function formatDate(dateStr: string | null): string {
           </div>
         </div>
         
-        <div v-if="isRunning" class="flex flex-wrap gap-2 mt-2">
+        <div v-if="isRunning" class="flex flex-wrap items-center gap-2 mt-2">
           <div v-if="isQueueRunning && queueTotal > 0" class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
             <span class="text-yellow-400">STACK PROGRESS</span>
             Job {{ queueCurrent }} of {{ queueTotal }}
@@ -543,9 +576,32 @@ function formatDate(dateStr: string | null): string {
         </div>
       </div>
       
-      <div v-if="isQueueRunning" class="z-10 px-4 py-2 bg-black/40 rounded-lg border border-white/10 flex flex-col items-center">
-        <span class="text-[8px] font-black opacity-40 uppercase">Queue</span>
-        <span class="text-xs font-black text-[var(--color-accent-primary)]">{{ researchQueue.length }} LEFT</span>
+      <div v-if="isQueueRunning" class="z-10 flex flex-col items-end gap-3 min-w-[140px]">
+        <!-- Queue Status Pill -->
+        <div class="px-6 py-2 bg-black/80 rounded-xl border border-white/20 flex flex-col items-center shadow-2xl backdrop-blur-md w-full">
+          <span class="text-[9px] font-black text-yellow-400 uppercase tracking-tighter opacity-70">QUEUE</span>
+          <span class="text-lg font-black text-white leading-tight">{{ researchQueue.length }} LEFT</span>
+        </div>
+
+        <!-- Action Buttons (Yield/Stop) directly under Queue -->
+        <div v-if="isRunning" class="flex gap-2 w-full justify-end">
+          <button 
+            @click="handleYield"
+            class="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-black/60 hover:bg-black/80 text-yellow-400 border border-yellow-400/30 rounded-lg transition-all font-black text-[10px] uppercase tracking-wider"
+            title="Finish current day and move to queue"
+          >
+            <Clock :size="12" />
+            YIELD
+          </button>
+          <button 
+            @click="handleStop"
+            class="flex-1 flex items-center justify-center gap-2 px-3 py-2 bg-red-600/60 hover:bg-red-600 text-white border border-red-400/30 rounded-lg transition-all font-black text-[10px] uppercase tracking-wider"
+            title="Stop analysis immediately"
+          >
+            <Square :size="10" fill="currentColor" />
+            STOP
+          </button>
+        </div>
       </div>
     </div>
 
@@ -723,16 +779,6 @@ function formatDate(dateStr: string | null): string {
                 </button>
               </template>
 
-              <button
-                v-if="isRunning"
-                type="button"
-                @click="handleStop"
-                :disabled="isStopping"
-                class="flex items-center justify-center gap-3 px-12 py-4 bg-[var(--color-signal-sell)] hover:bg-red-600 text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-70 shadow-xl shadow-red-500/40"
-              >
-                <RefreshCw v-if="isStopping" :size="20" class="animate-spin" />
-                <Square v-else :size="20" /> Stop Current
-              </button>
             </div>
           </form>
         </div>
@@ -786,23 +832,41 @@ function formatDate(dateStr: string | null): string {
                   </div>
                   <div class="space-y-1">
                     <div class="flex gap-1">
-                      <span v-for="t in job.tickers" :key="t" class="text-[10px] font-black text-[var(--color-accent-primary)]">{{ t }}</span>
+                      <span v-for="t in job.tickers" :key="t" class="text-[11px] font-black text-white bg-blue-500/20 px-1.5 py-0.5 rounded">{{ t }}</span>
                     </div>
-                    <div class="text-[10px] opacity-60 font-mono">{{ job.dateFrom || 'Today' }} → {{ job.dateTo || 'Today' }}</div>
+                    <div class="text-[10px] text-white font-mono font-bold">{{ job.dateFrom || 'Today' }} → {{ job.dateTo || 'Today' }}</div>
                   </div>
                 </div>
-                <button @click="removeFromQueue(job.id)" class="opacity-0 group-hover:opacity-100 p-1 hover:text-[var(--color-signal-sell)] transition-all">
-                  <Trash2 :size="14" />
-                </button>
+                <!-- Job Actions -->
+                <div class="flex items-center gap-2">
+                  <button 
+                    @click="promoteToActive(job.id)"
+                    class="p-2 hover:bg-white/10 rounded-lg transition-colors group/btn"
+                    title="Promote to Active"
+                  >
+                    <ArrowUp :size="18" class="text-green-400 group-hover/btn:scale-110 transition-transform" />
+                  </button>
+                  <button 
+                    @click="removeFromQueue(job.id)"
+                    class="p-2 hover:bg-white/10 rounded-lg transition-colors group/btn"
+                    title="Remove from Queue"
+                  >
+                    <Trash2 :size="18" class="text-red-400 group-hover/btn:scale-110 transition-transform" />
+                  </button>
+                </div>
               </div>
-              <div class="mt-3 flex flex-wrap gap-2">
-                <span class="px-2 py-0.5 bg-black/40 text-[8px] font-black rounded border border-white/5 flex items-center gap-1.5">
-                  <span class="opacity-30">Q:</span> {{ job.quickModel }}
+              <div class="mt-4 flex flex-wrap gap-2">
+                <span class="px-2.5 py-1 bg-black/60 text-[9px] font-black rounded-lg border border-white/10 flex items-center gap-2">
+                  <span class="text-yellow-400 uppercase tracking-wider text-[8px]">ANALYST</span>
+                  <span class="text-white">{{ job.quickModel }}</span>
                 </span>
-                <span class="px-2 py-0.5 bg-black/40 text-[8px] font-black rounded border border-white/5 flex items-center gap-1.5">
-                  <span class="opacity-30">D:</span> {{ job.deepModel }}
+                <span class="px-2.5 py-1 bg-black/60 text-[9px] font-black rounded-lg border border-white/10 flex items-center gap-2">
+                  <span class="text-yellow-400 uppercase tracking-wider text-[8px]">JUDGE</span>
+                  <span class="text-white">{{ job.deepModel }}</span>
                 </span>
-                <span class="px-2 py-0.5 bg-[var(--color-accent-primary)]/20 text-[var(--color-accent-primary)] text-[8px] font-black rounded border border-[var(--color-accent-primary)]/20">DEPTH {{ job.depth }}</span>
+                <span class="px-2.5 py-1 bg-blue-500/30 text-blue-200 text-[9px] font-black rounded-lg border border-blue-500/30 tracking-widest">
+                  DEPTH {{ job.depth }}
+                </span>
               </div>
             </div>
           </div>

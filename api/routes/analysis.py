@@ -30,6 +30,7 @@ class AnalysisTaskState:
         self.worker_thread: Optional[threading.Thread] = None
         self.is_queue_processing = False
         self.is_paused = False
+        self.yield_requested = False
 
     def start_job(self, tickers: List[str], dates: List[str], config: dict, job_id: Optional[str] = None):
         with self.lock:
@@ -56,15 +57,17 @@ class AnalysisTaskState:
             self.active_job = None
             self.active_job_id = None
 
-    def stop_job(self):
+    def stop_job(self, yield_after: bool = False):
         with self.lock:
             self.abort_event.set()
+            self.yield_requested = yield_after
 
     def clear_job(self):
         with self.lock:
             self.active_job = None
             self.active_job_id = None
             self.abort_event.clear()
+            self.yield_requested = False
 
     def is_running(self) -> bool:
         return self.active_job is not None
@@ -181,8 +184,22 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
             f.write(f"CRASH: {err_msg}\n")
         task_state.set_error(str(e))
     finally:
+        # Check if we should yield this job back to the queue
+        was_yielded = task_state.yield_requested
+        
         if request.id:
-            registry.update_queue_status(request.id, "completed" if not task_state.last_error else "failed", error=task_state.last_error)
+            status = "completed" if not task_state.last_error else "failed"
+            if was_yielded:
+                status = "queued"
+                logger.info(f"Job {request.id} yielded back to queue.")
+            
+            registry.update_queue_status(request.id, status, error=task_state.last_error)
+            
+            if was_yielded:
+                # Re-add to top of queue to ensure it's next after the new job
+                # Note: update_queue_status already set it to 'queued', but we want it at the TOP
+                registry.reorder_queue([request.id] + [j["id"] for j in registry.get_queue() if j["id"] != request.id])
+
         registry.close()
         task_state.clear_job()
 
@@ -397,5 +414,14 @@ def stop_analysis():
     if not task_state.is_running():
         return {"status": "error", "message": "No job is currently running."}
     
-    task_state.stop_job()
+    task_state.stop_job(yield_after=False)
     return {"status": "success", "message": "Stop requested. The job will abort before the next ticker/date."}
+
+@router.post("/yield")
+def yield_analysis():
+    """Request the current analysis job to yield to the queue gracefully."""
+    if not task_state.is_running():
+        return {"status": "error", "message": "No job is currently running."}
+    
+    task_state.stop_job(yield_after=True)
+    return {"status": "success", "message": "Yield requested. The job will finish the current day and then move back to the queue."}
