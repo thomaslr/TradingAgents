@@ -146,8 +146,10 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
             
             def set_status(msg: str):
                 with task_state.lock:
-                    if task_state.active_job:
-                        task_state.active_job["status_message"] = msg
+                    job = task_state.active_job
+                    if job:
+                        job["status_message"] = msg
+                        task_state.active_job = job
             
             from api.utils.network import ensure_ollama_ready
             import asyncio
@@ -173,20 +175,26 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
         
         def progress_cb(ticker: str, date: str):
             with task_state.lock:
-                if task_state.active_job:
-                    task_state.active_job["current_ticker"] = ticker
-                    task_state.active_job["current_date"] = date
+                job = task_state.active_job
+                if job:
+                    job["current_ticker"] = ticker
+                    job["current_date"] = date
+                    task_state.active_job = job
 
         def token_cb(in_tokens: int, out_tokens: int):
             with task_state.lock:
-                if task_state.active_job:
-                    task_state.active_job["input_tokens"] = in_tokens
-                    task_state.active_job["output_tokens"] = out_tokens
+                job = task_state.active_job
+                if job:
+                    job["input_tokens"] = in_tokens
+                    job["output_tokens"] = out_tokens
+                    task_state.active_job = job
 
         def status_cb(msg: str):
             with task_state.lock:
-                if task_state.active_job:
-                    task_state.active_job["sub_status"] = msg
+                job = task_state.active_job
+                if job:
+                    job["sub_status"] = msg
+                    task_state.active_job = job
 
         summary = run_batch_analysis(
             tickers=request.tickers,
