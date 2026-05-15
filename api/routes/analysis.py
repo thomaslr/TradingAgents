@@ -348,8 +348,8 @@ def start_batch_analysis(request: AnalysisRequest, background_tasks: BackgroundT
         "tickers": request.tickers,
         "dates": request.dates,
         "provider": request.llm_provider or config.get("llm_provider", "openai"),
-        "quickModel": request.quick_think_llm or config.get("quick_think_llm", ""),
-        "deepModel": request.deep_think_llm or config.get("deep_think_llm", ""),
+        "quick_model": request.quick_think_llm or config.get("quick_think_llm", ""),
+        "deep_model": request.deep_think_llm or config.get("deep_think_llm", ""),
         "depth": request.max_debate_rounds or config.get("max_debate_rounds", 1),
         "force": request.force
     }
