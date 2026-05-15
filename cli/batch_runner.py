@@ -90,6 +90,11 @@ class StatusTracker(BaseCallbackHandler):
             history = inputs.get("investment_debate_state", {}).get("history") or []
             round_num = (len(history) // 2) + 1
             status_msg = f"Debating (Round {round_num})"
+        elif any(x in node_name for x in ["Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"]):
+            # Risk discussion between the 3 risk analysts
+            count = inputs.get("risk_debate_state", {}).get("count") or 0
+            round_num = (count // 3) + 1
+            status_msg = f"Finalizing Decision (Risk Round {round_num})"
         elif "Trader" in node_name:
             status_msg = "Planning Trade"
         elif "Portfolio Manager" in node_name:

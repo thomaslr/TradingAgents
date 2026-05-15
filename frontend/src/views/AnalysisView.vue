@@ -146,7 +146,8 @@ async function checkStatus() {
       if (msg.includes('Executing:')) {
         thoughtStreamText.value = msg.substring(msg.indexOf('Executing:'))
       } else if (msg && !msg.includes('Executing:')) {
-        thoughtStreamText.value = 'Analyzing data...'
+        // If it's a high-level status but contains extra info (like Round X), show it
+        thoughtStreamText.value = msg.includes('Round') ? msg : 'Analyzing data...'
       }
 
       // Calculate Token Rates (every ~5s)
