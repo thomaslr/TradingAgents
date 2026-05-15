@@ -183,12 +183,10 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
         if request.id:
             status = "completed" if not task_state.last_error else "failed"
             if was_yielded:
-                status = "queued"
+                status = "pending"
             
             registry.update_queue_status(request.id, status, error=task_state.last_error)
             
-            if was_yielded:
-                registry.reorder_queue([request.id] + [j["id"] for j in registry.get_queue() if j["id"] != request.id])
 
         registry.close()
         task_state.clear_job()

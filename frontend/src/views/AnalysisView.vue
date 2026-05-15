@@ -924,7 +924,7 @@ function formatDate(dateStr: string | null): string {
 
           <div v-else class="flex-1 space-y-3 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar">
             <div 
-              v-for="(job, index) in researchQueue" 
+              v-for="(job, index) in researchQueue.filter(j => j.id !== runningJob?.id)" 
               :key="job.id" 
               draggable="true"
               @dragstart="onDragStart(index)"
