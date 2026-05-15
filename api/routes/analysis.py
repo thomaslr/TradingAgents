@@ -340,15 +340,24 @@ def resume_research_queue(background_tasks: BackgroundTasks, registry: RunRegist
 def start_batch_analysis(request: AnalysisRequest, background_tasks: BackgroundTasks, config: dict = Depends(get_config), registry: RunRegistry = Depends(get_registry)):
     if task_state.is_running():
         raise HTTPException(status_code=400, detail="Job already running.")
-    task_state.start_job(request.tickers, request.dates, config)
-    proc = multiprocessing.Process(
-        target=execute_analysis_task,
-        args=(request, config, registry.db_path),
-        daemon=True
-    )
-    proc.start()
-    task_state.worker_process = proc
-    return {"status": "accepted"}
+    
+    import uuid
+    job_id = request.id or str(uuid.uuid4())
+    job_data = {
+        "id": job_id,
+        "tickers": request.tickers,
+        "dates": request.dates,
+        "provider": request.llm_provider or config.get("llm_provider", "openai"),
+        "quickModel": request.quick_think_llm or config.get("quick_think_llm", ""),
+        "deepModel": request.deep_think_llm or config.get("deep_think_llm", ""),
+        "depth": request.max_debate_rounds or config.get("max_debate_rounds", 1),
+        "force": request.force
+    }
+    
+    registry.add_to_queue(job_data, priority=True)
+    task_state.is_paused = False
+    start_worker_if_needed(background_tasks, registry.db_path, config)
+    return {"status": "accepted", "id": job_id}
 
 @router.get("/status")
 def get_analysis_status(background_tasks: BackgroundTasks, registry: RunRegistry = Depends(get_registry), config: dict = Depends(get_config)):
@@ -378,7 +387,7 @@ async def purge_analysis(registry: RunRegistry = Depends(get_registry)):
     task_state.abort_event.set()
     with task_state.lock:
         if task_state.worker_process and task_state.worker_process.is_alive():
-            task_state.worker_process.terminate()
+            task_state.worker_process.kill()  # Forcefully kill with SIGKILL
             task_state.worker_process.join(timeout=2)
         
         registry.clear_queue()
