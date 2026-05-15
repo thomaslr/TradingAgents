@@ -293,10 +293,23 @@ def add_to_research_queue(
     registry: RunRegistry = Depends(get_registry),
     config: dict = Depends(get_config)
 ):
+    date_from = str(item.get("dateFrom", "")).strip()
+    date_to = str(item.get("dateTo", "")).strip()
+    
+    # Enforce max length to prevent concatenation bugs (e.g. "2026-01-042026-02-05")
+    if len(date_from) > 10: date_from = date_from[:10]
+    if len(date_to) > 10: date_to = date_to[:10]
+
+    dates_list = []
+    if date_from:
+        dates_list.append(date_from)
+        if date_to and date_to != date_from:
+            dates_list.append(date_to)
+
     job_data = {
         "id": item.get("id", datetime.now().strftime("%Y%m%d%H%M%S")),
         "tickers": item.get("tickers", []),
-        "dates": [item.get("dateFrom"), item.get("dateTo")] if item.get("dateFrom") else [],
+        "dates": dates_list,
         "provider": item.get("provider", "openai"),
         "quick_model": item.get("quickModel", ""),
         "deep_model": item.get("deepModel", ""),

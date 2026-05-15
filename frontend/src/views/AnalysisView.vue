@@ -109,6 +109,7 @@ onUnmounted(() => {
 async function checkStatus() {
   try {
     const status = await fetchAnalysisStatus()
+    const wasRunning = isRunning.value
     isRunning.value = status.running
     isQueuePaused.value = !!status.is_paused
     
@@ -118,7 +119,15 @@ async function checkStatus() {
     }
 
     if (!status.running) {
+      // Clear stopping state and show final message if we just finished
+      if (isStopping.value) {
+        successMessage.value = 'Analysis stopped.'
+      } else if (wasRunning) {
+        successMessage.value = 'Analysis complete.'
+      }
       isStopping.value = false
+      isQueueRunning.value = false
+      thoughtStreamText.value = ''
     }
 
     if (status.running && status.job) {
@@ -137,17 +146,15 @@ async function checkStatus() {
       }
       
       // If backend has a job ID, we are likely in a queue run
-      if (status.job.id) {
-         isQueueRunning.value = true
-      }
+      isQueueRunning.value = !!status.job.id
 
       // Extract the thought stream text if it contains the tool executing prefix
       const msg = status.job.sub_status || ''
       if (msg.includes('Executing:')) {
         thoughtStreamText.value = msg.substring(msg.indexOf('Executing:'))
-      } else if (msg && !msg.includes('Executing:')) {
-        // If it's a high-level status but contains extra info (like Round X), show it
-        thoughtStreamText.value = msg.includes('Round') ? msg : 'Analyzing data...'
+      } else if (msg) {
+        // Display high-level status as is (e.g., "Debating (Round 1)" or "Market Analyst")
+        thoughtStreamText.value = msg
       }
 
       // Calculate Token Rates (every ~5s)
@@ -522,6 +529,17 @@ async function handleDeleteSchedule(id: string) {
 
 function padDate(val: string): string {
   if (!val) return val
+  
+  // Safeguard: if user pastes a concatenated string or range (e.g. "2026-01-042026-02-05")
+  if (val.length > 10) {
+    const match = val.match(/\d{4}-\d{2}-\d{2}/)
+    if (match) {
+      val = match[0]
+    } else {
+      return ''
+    }
+  }
+
   const parts = val.split('-').map(p => p.trim())
   if (parts.length === 3) {
     let [y, m, d] = parts

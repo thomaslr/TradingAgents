@@ -337,7 +337,7 @@ class TradingAgentsGraph:
         init_agent_state = self.propagator.create_initial_state(
             company_name, trade_date, past_context=past_context
         )
-        args = self.propagator.get_graph_args()
+        args = self.propagator.get_graph_args(callbacks=self.callbacks)
 
         # Inject thread_id so same ticker+date resumes, different date starts fresh.
         if self.config.get("checkpoint_enabled"):
