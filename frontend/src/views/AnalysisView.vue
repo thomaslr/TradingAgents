@@ -120,7 +120,16 @@ async function checkStatus() {
     }
 
     if (!status.running) {
-      // Clear stopping state and show final message if we just finished
+      // Smooth Transition: If we are in the middle of a queue, don't flash to 'Idle'
+      if (isProcessingQueue.value || (researchQueue.value.length > 0 && wasRunning)) {
+        successMessage.value = 'Handoff: Starting next job in queue...'
+        thoughtStreamText.value = 'Preparing environment for next analysis...'
+        currentPhase.value = 'Scraping'
+        isRunning.value = true // Visually keep the bar active
+        return 
+      }
+
+      // Actual cleanup only when truly finished or stopped
       if (isStopping.value) {
         successMessage.value = 'Analysis stopped.'
       } else if (wasRunning) {
@@ -128,7 +137,9 @@ async function checkStatus() {
       }
       isStopping.value = false
       isQueueRunning.value = false
+      isRunning.value = false
       thoughtStreamText.value = ''
+      currentPhase.value = ''
     }
 
     if (status.running && status.job) {
@@ -927,51 +938,52 @@ function formatDate(dateStr: string | null): string {
             </div>
 
             <!-- Action Buttons -->
-            <div class="pt-8 border-t border-[var(--color-border-default)] flex flex-wrap items-center gap-6">
-              <!-- Force Refresh Toggle -->
+            <div class="pt-8 border-t border-[var(--color-border-default)] flex flex-col gap-6">
+              <!-- Force Data Refresh Toggle -->
               <div 
-                class="flex items-center gap-3 px-4 py-3 bg-black/20 rounded-xl border border-white/5 cursor-pointer hover:bg-black/40 transition-all select-none"
+                class="flex items-center gap-3 px-4 py-3 bg-black/20 rounded-xl border border-white/5 cursor-pointer hover:bg-black/40 transition-all select-none w-fit"
                 @click="force = !force"
               >
                 <div class="relative w-10 h-6 rounded-full transition-colors duration-300" :class="force ? 'bg-amber-500' : 'bg-white/10'">
                   <div class="absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-300 shadow-sm" :class="force ? 'translate-x-4' : ''"></div>
                 </div>
                 <div class="flex flex-col">
-                  <span class="text-[9px] font-black uppercase tracking-widest transition-colors" :class="force ? 'text-amber-400' : 'text-white/40'">Force Refresh</span>
-                  <span class="text-[8px] opacity-30 -mt-1 uppercase font-black">Bypass Data Cache</span>
+                  <span class="text-[9px] font-black uppercase tracking-widest transition-colors" :class="force ? 'text-amber-400' : 'text-white/40'">Force Data Refresh</span>
+                  <span class="text-[8px] opacity-30 -mt-1 uppercase font-black">Bypass Local Data Cache</span>
                 </div>
               </div>
 
-              <template v-if="activeTab === 'research'">
-                <button
-                  v-if="!isRunning"
-                  type="submit"
-                  :disabled="loading"
-                  class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
-                >
-                  <RefreshCw v-if="loading" :size="20" class="animate-spin" />
-                  <Play v-else :size="20" /> Start Now
-                </button>
+              <div class="flex flex-wrap items-center gap-4">
+                <template v-if="activeTab === 'research'">
+                  <button
+                    v-if="!isRunning"
+                    type="submit"
+                    :disabled="loading"
+                    class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
+                  >
+                    <RefreshCw v-if="loading" :size="20" class="animate-spin" />
+                    <Play v-else :size="20" /> Start Now
+                  </button>
 
-                <button
-                  type="button"
-                  @click="addToQueue"
-                  class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-bg-elevated)] hover:bg-opacity-80 border border-[var(--color-border-default)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98]"
-                >
-                  Add to Queue
-                </button>
-              </template>
+                  <button
+                    type="button"
+                    @click="addToQueue"
+                    class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-bg-elevated)] hover:bg-opacity-80 border border-[var(--color-border-default)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+                  >
+                    Add to Queue
+                  </button>
+                </template>
 
-              <template v-else>
-                <button
-                  type="submit"
-                  :disabled="loading"
-                  class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
-                >
-                  <Clock :size="20" /> Create Pipeline
-                </button>
-              </template>
-
+                <template v-else>
+                  <button
+                    type="submit"
+                    :disabled="loading"
+                    class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
+                  >
+                    <Clock :size="20" /> Create Pipeline
+                  </button>
+                </template>
+              </div>
             </div>
           </form>
         </div>
