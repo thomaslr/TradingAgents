@@ -599,33 +599,36 @@ function formatDate(dateStr: string | null): string {
           </div>
         </div>
         
-        <div v-if="isRunning" class="flex flex-wrap items-center gap-2 mt-2">
-          <div v-if="isQueueRunning && queueTotal > 0" class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
-            <span class="text-yellow-400">STACK PROGRESS</span>
-            Job {{ queueCurrent }} of {{ queueTotal }}
-          </div>
-          
-          <!-- Metadata Pills (Fallback to form state if backend hasn't reported yet) -->
-          <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
-            <span class="text-yellow-400">ANALYST</span>
-            {{ activeConfig?.quick_model || quickModel }}
-          </div>
-          <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
-            <span class="text-yellow-400">JUDGE</span>
-            {{ activeConfig?.deep_model || deepModel }}
-          </div>
-          <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
-            <span class="text-yellow-400">DEPTH</span>
-            {{ activeConfig?.debate_depth || depth }}
+        <div v-if="isRunning" class="flex flex-col gap-3 mt-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <div v-if="isQueueRunning && queueTotal > 0" class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+              <span class="text-yellow-400">STACK PROGRESS</span>
+              Job {{ queueCurrent }} of {{ queueTotal }}
+            </div>
+            
+            <!-- Metadata Pills (Fallback to form state if backend hasn't reported yet) -->
+            <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+              <span class="text-yellow-400">ANALYST</span>
+              {{ activeConfig?.quick_model || quickModel }}
+            </div>
+            <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+              <span class="text-yellow-400">JUDGE</span>
+              {{ activeConfig?.deep_model || deepModel }}
+            </div>
+            <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+              <span class="text-yellow-400">DEPTH</span>
+              {{ activeConfig?.debate_depth || depth }}
+            </div>
+
+            <!-- Tokens Rate Pill -->
+            <div v-if="inputTokensPerSec > 0 || outputTokensPerSec > 0" class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+              <span class="text-yellow-400">THROUGHPUT</span>
+              <span class="text-blue-400">{{ inputTokensPerSec }}ᵢ</span> / <span class="text-cyan-400">{{ outputTokensPerSec }}ₒ</span> <small class="text-white/40 ml-1">tps</small>
+            </div>
           </div>
 
-          <!-- Tokens Rate Pill -->
-          <div v-if="inputTokensPerSec > 0 || outputTokensPerSec > 0" class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
-            <span class="text-yellow-400">THROUGHPUT</span>
-            <span class="text-blue-400">{{ inputTokensPerSec }}ᵢ</span> / <span class="text-cyan-400">{{ outputTokensPerSec }}ₒ</span> <small class="text-white/40 ml-1">tps</small>
-          </div>
           <!-- Deep Intel Toggle (Moved to Left) -->
-          <div v-if="isRunning" class="mt-4 flex">
+          <div class="flex">
             <button 
               @click="showDeepIntel = !showDeepIntel"
               type="button"
@@ -962,14 +965,17 @@ function formatDate(dateStr: string | null): string {
 
           <div v-else class="flex-1 space-y-3 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar">
             <div 
-              v-for="(job, index) in researchQueue.filter(j => j.id !== runningJob?.id)" 
+              v-for="(job, index) in researchQueue" 
               :key="job.id" 
               draggable="true"
               @dragstart="onDragStart(index)"
               @dragover="onDragOver"
               @drop="onDrop(index)"
-              class="p-4 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl group relative hover:border-[var(--color-accent-primary)]/50 transition-all cursor-grab active:cursor-grabbing"
-              :class="{ 'opacity-50 border-dashed': dragIndex === index }"
+              class="p-4 bg-[var(--color-bg-elevated)] rounded-xl group relative transition-all cursor-grab active:cursor-grabbing"
+              :class="[
+                dragIndex === index ? 'opacity-50 border-dashed border-[var(--color-border-default)]' : 'border',
+                job.id === runningJob?.id ? 'border-[var(--color-signal-buy)] shadow-[0_0_10px_rgba(34,197,94,0.2)]' : 'border-[var(--color-border-default)] hover:border-[var(--color-accent-primary)]/50'
+              ]"
             >
               <div class="flex justify-between items-start">
                 <div class="flex items-center gap-3">
@@ -984,7 +990,7 @@ function formatDate(dateStr: string | null): string {
                   </div>
                 </div>
                 <!-- Job Actions -->
-                <div class="flex items-center gap-2">
+                <div v-if="job.id !== runningJob?.id" class="flex items-center gap-2">
                   <button 
                     @click="promoteToActive(job.id)"
                     class="p-2 hover:bg-white/10 rounded-lg transition-colors group/btn"
