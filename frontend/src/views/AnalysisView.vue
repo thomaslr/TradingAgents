@@ -120,16 +120,7 @@ async function checkStatus() {
     }
 
     if (!status.running) {
-      // Smooth Transition: If we are in the middle of a queue, don't flash to 'Idle'
-      if (isProcessingQueue.value || (researchQueue.value.length > 0 && wasRunning)) {
-        successMessage.value = 'Handoff: Starting next job in queue...'
-        thoughtStreamText.value = 'Preparing environment for next analysis...'
-        currentPhase.value = 'Scraping'
-        isRunning.value = true // Visually keep the bar active
-        return 
-      }
-
-      // Actual cleanup only when truly finished or stopped
+      // Clear stopping state and show final message if we just finished
       if (isStopping.value) {
         successMessage.value = 'Analysis stopped.'
       } else if (wasRunning) {
