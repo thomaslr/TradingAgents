@@ -1033,7 +1033,11 @@ function formatDate(dateStr: string | null): string {
                     <div class="flex gap-1">
                       <span v-for="t in job.tickers" :key="t" class="text-[11px] font-black text-white bg-blue-500/20 px-1.5 py-0.5 rounded">{{ t }}</span>
                     </div>
-                    <div class="text-[10px] text-white font-mono font-bold">{{ job.dateFrom || 'Today' }} → {{ job.dateTo || 'Today' }}</div>
+                    <div class="text-[10px] text-white font-mono font-bold">
+                      <span v-if="job.dates && job.dates.length === 1">{{ job.dates[0] }}</span>
+                      <span v-else-if="job.dates && job.dates.length === 2">{{ job.dates[0] }} → {{ job.dates[1] }}</span>
+                      <span v-else>{{ job.dateFrom || 'Today' }}<span v-if="job.dateTo && job.dateTo !== job.dateFrom"> → {{ job.dateTo }}</span></span>
+                    </div>
                   </div>
                 </div>
                 <!-- Job Actions -->

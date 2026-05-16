@@ -404,6 +404,7 @@ async def purge_analysis(registry: RunRegistry = Depends(get_registry)):
             task_state.worker_process.join(timeout=2)
         
         registry.clear_queue()
+        registry.clear_metrics()
         cache_dir = os.environ.get("TRADINGAGENTS_CACHE_DIR", "data/cache")
         if os.path.exists(cache_dir):
             try:

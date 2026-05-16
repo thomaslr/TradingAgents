@@ -69,6 +69,30 @@ CREATE TABLE IF NOT EXISTS research_queue (
     started_at      TEXT,
     completed_at    TEXT
 );
+
+CREATE TABLE IF NOT EXISTS analysis_metrics (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          INTEGER, -- Links to the 'runs' table
+    ticker          TEXT,
+    trade_date      TEXT,
+    quick_model     TEXT,
+    deep_model      TEXT,
+    -- Timing metrics (seconds)
+    market_sec      REAL DEFAULT 0,
+    social_sec      REAL DEFAULT 0,
+    news_sec        REAL DEFAULT 0,
+    fund_sec        REAL DEFAULT 0,
+    debate_sec      REAL DEFAULT 0,
+    decision_sec    REAL DEFAULT 0,
+    total_sec       REAL DEFAULT 0,
+    -- Token metrics
+    input_tokens    INTEGER DEFAULT 0,
+    output_tokens   INTEGER DEFAULT 0,
+    avg_tps         REAL DEFAULT 0,
+    depth           INTEGER DEFAULT 1,
+    -- Metadata
+    created_at      TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 # Columns added after the initial schema.  Each entry is
@@ -122,7 +146,7 @@ class RunRegistry:
         self.db_path = db_path
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA journal_mode=TRUNCATE")
         self._ensure_schema()
 
     # ------------------------------------------------------------------
@@ -446,14 +470,59 @@ class RunRegistry:
         self.conn.commit()
 
     def delete_run(self, run_id: int) -> None:
-        """Remove a run entry (used by --force to allow re-creation)."""
+        """Remove a run entry and cleanup orphaned configs."""
+        # Get config_id before deleting
+        row = self.conn.execute("SELECT config_id FROM runs WHERE id = ?", (run_id,)).fetchone()
+        config_id = row[0] if row else None
+        
         self.conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+        self.conn.execute("DELETE FROM analysis_metrics WHERE run_id = ?", (run_id,))
         self.conn.commit()
+        
+        if config_id:
+            self.cleanup_orphaned_configs(config_id)
 
     def delete_runs_for_ticker_date(self, ticker: str, trade_date: str) -> None:
         """Remove all runs for a specific ticker and date."""
+        # Get all unique config_ids affected
+        rows = self.conn.execute(
+            "SELECT DISTINCT config_id FROM runs WHERE ticker = ? AND trade_date = ?", 
+            (ticker, trade_date)
+        ).fetchall()
+        config_ids = [r[0] for r in rows if r[0]]
+        
+        # Get run IDs to delete metrics
+        cursor = self.conn.execute(
+            "SELECT id FROM runs WHERE ticker = ? AND trade_date = ?", (ticker, trade_date)
+        )
+        run_ids = [row[0] for row in cursor.fetchall()]
+        
+        if run_ids:
+            placeholders = ",".join("?" * len(run_ids))
+            self.conn.execute(f"DELETE FROM analysis_metrics WHERE run_id IN ({placeholders})", run_ids)
+
         self.conn.execute("DELETE FROM runs WHERE ticker = ? AND trade_date = ?", (ticker, trade_date))
         self.conn.commit()
+        
+        for cid in config_ids:
+            self.cleanup_orphaned_configs(cid)
+
+    def cleanup_orphaned_configs(self, config_id: Optional[str] = None) -> None:
+        """Remove configurations that have no associated runs."""
+        if config_id:
+            # Check if this specific config is orphaned
+            count = self.conn.execute(
+                "SELECT COUNT(*) FROM runs WHERE config_id = ?", (config_id,)
+            ).fetchone()[0]
+            if count == 0:
+                self.conn.execute("DELETE FROM simulation_configs WHERE config_id = ?", (config_id,))
+                self.conn.commit()
+        else:
+            # Global cleanup
+            self.conn.execute(
+                "DELETE FROM simulation_configs WHERE config_id NOT IN (SELECT DISTINCT config_id FROM runs)"
+            )
+            self.conn.commit()
 
     # ── Research Queue Management ──────────────────────────
 
@@ -532,6 +601,11 @@ class RunRegistry:
         self.conn.execute("DELETE FROM research_queue")
         self.conn.commit()
 
+    def clear_metrics(self):
+        """Nuclear wipe of all research benchmarks."""
+        self.conn.execute("DELETE FROM analysis_metrics")
+        self.conn.commit()
+
     def update_queue_status(self, job_id: str, status: str, error: Optional[str] = None):
         """Update job lifecycle state."""
         now = _now_iso()
@@ -564,6 +638,17 @@ class RunRegistry:
             return pending[0]
         return None
 
+
+    def list_metrics(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """List historical analysis metrics, sorted by most recent."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM analysis_metrics ORDER BY created_at DESC LIMIT ?",
+                (limit,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
     def close(self) -> None:
         self.conn.close()

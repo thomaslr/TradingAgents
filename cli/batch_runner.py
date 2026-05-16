@@ -77,6 +77,18 @@ class StatusTracker(BaseCallbackHandler):
             "Debating", "Finalizing Decision", "Planning Trade"
         ]
         self.seq_index = 0
+        
+        # Timing Metrics
+        self.start_times = {}
+        self.durations = {
+            "market": 0, "social": 0, "news": 0, "fundamentals": 0,
+            "debate": 0, "decision": 0
+        }
+        self.total_start = time.perf_counter()
+        
+        # Token Metrics
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
 
     def on_chain_start(self, serialized, inputs, **kwargs):
         """Update status when a new node/chain starts."""
@@ -112,16 +124,35 @@ class StatusTracker(BaseCallbackHandler):
             self.seq_index = 6
 
         if status_msg:
+            # Finalize timing for previous node if any
+            if self.current_node:
+                self._record_duration(self.current_node)
+            
             self.current_node = status_msg
+            self.start_times[status_msg] = time.perf_counter()
+            
             self.progress.update(self.task_id, status=f"[yellow]{status_msg}[/yellow]")
             if self.external_status_callback:
                 self.external_status_callback(status_msg)
+
+    def _record_duration(self, node_name):
+        """Record the time taken for a specific node."""
+        if node_name in self.start_times:
+            duration = time.perf_counter() - self.start_times[node_name]
+            # Map node name to duration category
+            if "Market" in node_name: self.durations["market"] += duration
+            elif "Social" in node_name: self.durations["social"] += duration
+            elif "News" in node_name: self.durations["news"] += duration
+            elif "Fundamentals" in node_name: self.durations["fundamentals"] += duration
+            elif "Debating" in node_name: self.durations["debate"] += duration
+            elif "Decision" in node_name or "Planning" in node_name: self.durations["decision"] += duration
 
     def on_llm_start(self, serialized, prompts, **kwargs):
         """Update status when the LLM starts reasoning."""
         # If we are lost, use the sequence to guess where we are
         if not self.current_node and self.seq_index < len(self.sequence):
             self.current_node = self.sequence[self.seq_index]
+            self.start_times[self.current_node] = time.perf_counter()
 
         if self.external_status_callback:
             # Signal the 'Reasoning' phase
@@ -132,24 +163,26 @@ class StatusTracker(BaseCallbackHandler):
                 self.external_status_callback(msg)
 
     def on_llm_end(self, response, **kwargs):
-        """Update status when the LLM finishes (moving to Reporting)."""
+        """Update status and track tokens when the LLM finishes."""
+        # Track tokens from the response if available
+        if hasattr(response, "llm_output") and response.llm_output:
+            usage = response.llm_output.get("token_usage") or {}
+            self.total_input_tokens += usage.get("prompt_tokens", 0)
+            self.total_output_tokens += usage.get("completion_tokens", 0)
+
         if self.external_status_callback:
             msg = f"PHASE: Reporting - Finalizing report..."
             if self.current_node:
                 self.external_status_callback(f"{self.current_node} - {msg}")
             else:
                 self.external_status_callback(msg)
-        
-        # Advance sequence after a report is finished if we were at the start of a phase
-        if self.seq_index < len(self.sequence) - 1:
-            # We don't advance automatically yet, we wait for the next Tool/LLM start
-            pass
 
     def on_tool_start(self, serialized, input_str, **kwargs):
         """Update the thought stream when a tool is called (Scraping phase)."""
         # If we are lost, use the sequence to guess where we are
         if not self.current_node and self.seq_index < len(self.sequence):
             self.current_node = self.sequence[self.seq_index]
+            self.start_times[self.current_node] = time.perf_counter()
 
         tool_name = serialized.get("name") or "Tool"
         friendly_names = {
@@ -172,6 +205,37 @@ class StatusTracker(BaseCallbackHandler):
                 self.external_status_callback(f"{self.current_node} - {msg}")
             else:
                 self.external_status_callback(msg)
+
+    def save_metrics(self, db_path, run_id, ticker, trade_date, quick_model, deep_model, depth):
+        """Finalize timings and save to analysis_metrics table."""
+        # Record duration for final node
+        if self.current_node:
+            self._record_duration(self.current_node)
+            
+        total_duration = time.perf_counter() - self.total_start
+        avg_tps = (self.total_input_tokens + self.total_output_tokens) / total_duration if total_duration > 0 else 0
+        
+        try:
+            import sqlite3
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO analysis_metrics (
+                        run_id, ticker, trade_date, quick_model, deep_model,
+                        market_sec, social_sec, news_sec, fund_sec,
+                        debate_sec, decision_sec, total_sec,
+                        input_tokens, output_tokens, avg_tps, depth
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    run_id, ticker, trade_date, quick_model, deep_model,
+                    self.durations["market"], self.durations["social"], self.durations["news"], self.durations["fundamentals"],
+                    self.durations["debate"], self.durations["decision"], total_duration,
+                    self.total_input_tokens, self.total_output_tokens, avg_tps, depth
+                ))
+                conn.commit()
+        except Exception as e:
+            # Log error but don't crash the analysis
+            print(f"Error saving analysis metrics: {e}")
 
 
 def _expand_dates(date_from: str, date_to: str) -> List[str]:
@@ -340,19 +404,22 @@ def run_batch_analysis(
                 if existing or force:
                     # We also check if we're forcing so we can wipe ANY provider/model config for this date
                     if force or (existing and existing["status"] == "running"):
-                        # Clear ALL existing runs for this ticker/date to prevent duplicates
-                        runs_to_clear = registry.list_runs(ticker=ticker)
-                        runs_to_clear = [r for r in runs_to_clear if r["trade_date"] == date]
-                        
-                        for r in runs_to_clear:
-                            # Clean up file system
-                            report_dir = r.get("report_dir")
+                        # Clear ONLY the specific run for this provider/model configuration
+                        if existing:
+                            # Clean up file system: only delete the specific JSON files for this config
+                            report_dir = existing.get("report_dir")
                             if report_dir and Path(report_dir).exists():
-                                import shutil
-                                shutil.rmtree(report_dir, ignore_errors=True)
-                        
-                        # Delete from DB
-                        registry.delete_runs_for_ticker_date(ticker, date)
+                                # Pattern matches the specific model combination
+                                pattern = f"{quick_model}_{deep_model}_d{depth}_*.json".replace(":", "-")
+                                for p in Path(report_dir).glob(pattern):
+                                    p.unlink(missing_ok=True)
+                            
+                            # Delete from DB
+                            registry.delete_run(existing["id"])
+                        elif force:
+                             # If force is used but no 'existing' run was found by exact match,
+                             # we don't delete everything, just let it proceed to create a new one.
+                             pass
 
                         if force:
                             console.print(f"  [yellow]↻ Force re-run (cleared existing): {ticker} {date}[/yellow]")
@@ -368,9 +435,7 @@ def run_batch_analysis(
                         continue
 
                 # Create registry entry
-                report_dir = str(
-                    Path(config["results_dir"]) / ticker / date / "reports"
-                )
+                report_dir = str(Path(config["results_dir"]) / ticker / date)
                 run_id = registry.create_run(
                     ticker=ticker,
                     trade_date=date,
@@ -415,6 +480,10 @@ def run_batch_analysis(
                     )
                     results["runtime_sec"] = elapsed
                     registry.mark_completed(run_id, results)
+                    # Save research metrics for future analysis
+                    status_cb.save_metrics(
+                        registry.db_path, run_id, ticker, date, quick_model, deep_model, depth
+                    )
                     completed += 1
                     
                     progress.update(task, status="[green]Done[/green]")
@@ -449,9 +518,6 @@ def run_batch_analysis(
 
     console.print(f"\n[bold]Batch Summary:[/bold]")
     console.print(f"  ✓ Completed: {completed}  ⏭ Skipped: {skipped}  ✗ Failed: {failed}")
-    console.print(f"  Database: {registry.db_path}\n")
-
-    return summary
     console.print(f"  Database: {registry.db_path}\n")
 
     return summary

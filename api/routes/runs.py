@@ -103,3 +103,10 @@ def get_performance_data(
         limit=limit,
     )
 
+@router.get("/metrics", response_model=List[Dict[str, Any]])
+def list_metrics(
+    limit: int = Query(100, description="Max number of metrics to return"),
+    registry: RunRegistry = Depends(get_registry)
+):
+    """List historical analysis metrics."""
+    return registry.list_metrics(limit=limit)
