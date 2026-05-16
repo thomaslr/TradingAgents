@@ -47,13 +47,19 @@ class TokenTracker(BaseCallbackHandler):
             for generation in generations:
                 # Different providers use different metadata keys for tokens
                 # We try to handle the most common ones (OpenAI, Ollama, Anthropic, Gemini)
-                usage = generation.message.response_metadata.get("token_usage") or \
-                        generation.message.response_metadata.get("usage") or \
-                        generation.message.additional_kwargs.get("token_usage")
+                rm = generation.message.response_metadata
+                usage = rm.get("token_usage") or rm.get("usage") or generation.message.additional_kwargs.get("token_usage")
                 
                 if usage:
-                    self.input_tokens += usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
-                    self.output_tokens += usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+                    in_t = usage.get("prompt_tokens", 0) or usage.get("input_tokens", 0)
+                    out_t = usage.get("completion_tokens", 0) or usage.get("output_tokens", 0)
+                    self.input_tokens += in_t
+                    self.output_tokens += out_t
+                    logging.info(f"TokenTracker: Extracted usage: in={in_t}, out={out_t}")
+                elif "prompt_eval_count" in rm or "eval_count" in rm:
+                    # Native ChatOllama
+                    self.input_tokens += rm.get("prompt_eval_count", 0)
+                    self.output_tokens += rm.get("eval_count", 0)
                     
                     if self.progress and self.task_id is not None:
                         tokens_str = f"[blue]{self.input_tokens}ᵢ[/blue]/[cyan]{self.output_tokens}ₒ[/cyan]"
@@ -72,37 +78,48 @@ class StatusTracker(BaseCallbackHandler):
         self.external_status_callback = None
         self.current_node = ""
 
-    def on_chain_start(self, serialized, inputs, **kwargs):
-        """Update status when a new node/chain starts."""
-        # LangGraph nodes often put their name in metadata or tags
-        name = serialized.get("name") or ""
-        tags = kwargs.get("tags") or []
+    def on_llm_start(self, serialized, prompts, **kwargs):
+        """Update status when the LLM starts (usually at the beginning of a node)."""
         metadata = kwargs.get("metadata") or {}
-        node_name = metadata.get("langgraph_node") or name
+        node_name = metadata.get("langgraph_node") or ""
+        
+        logging.info(f"StatusTracker: on_llm_start node_name='{node_name}'")
 
         status_msg = ""
-        
         # Match names from trading_graph setup.py
         if any(x in node_name for x in ["Market Analyst", "Social Analyst", "News Analyst", "Fundamentals Analyst"]):
             status_msg = node_name
         elif any(x in node_name for x in ["Researcher", "Debator"]):
-            # Try to determine the round number from the inputs
-            history = inputs.get("investment_debate_state", {}).get("history") or []
-            round_num = (len(history) // 2) + 1
-            status_msg = f"Debating (Round {round_num})"
+            status_msg = f"Debating"
         elif any(x in node_name for x in ["Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"]):
-            # Risk discussion between the 3 risk analysts
-            count = inputs.get("risk_debate_state", {}).get("count") or 0
-            round_num = (count // 3) + 1
-            status_msg = f"Finalizing Decision (Risk Round {round_num})"
+            status_msg = "Finalizing Decision (Risk Analysis)"
         elif "Trader" in node_name:
             status_msg = "Planning Trade"
         elif "Portfolio Manager" in node_name:
             status_msg = "Finalizing Decision"
 
-        if status_msg:
+        if status_msg and status_msg != self.current_node:
             self.current_node = status_msg
-            self.progress.update(self.task_id, status=f"[yellow]{status_msg}[/yellow]")
+            if self.progress and self.task_id is not None:
+                self.progress.update(self.task_id, status=f"[yellow]{status_msg}[/yellow]")
+            if self.external_status_callback:
+                self.external_status_callback(status_msg)
+
+    def on_chain_start(self, serialized, inputs, **kwargs):
+        """Also keep on_chain_start for non-LLM nodes."""
+        metadata = kwargs.get("metadata") or {}
+        node_name = metadata.get("langgraph_node") or serialized.get("name") or ""
+        
+        if not node_name: return
+
+        status_msg = ""
+        if any(x in node_name for x in ["Market Analyst", "Social Analyst", "News Analyst", "Fundamentals Analyst"]):
+            status_msg = node_name
+        
+        if status_msg and status_msg != self.current_node:
+            self.current_node = status_msg
+            if self.progress and self.task_id is not None:
+                self.progress.update(self.task_id, status=f"[yellow]{status_msg}[/yellow]")
             if self.external_status_callback:
                 self.external_status_callback(status_msg)
 

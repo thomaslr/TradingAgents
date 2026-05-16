@@ -27,7 +27,12 @@ class AnalysisTaskState:
             "active_job_id": None,
             "last_error": None,
             "is_paused": False,
-            "yield_requested": False
+            "yield_requested": False,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "sub_status": None,
+            "current_ticker": None,
+            "current_date": None
         })
         self.abort_event = multiprocessing.Event()
         self.lock = multiprocessing.Lock()
@@ -59,11 +64,27 @@ class AnalysisTaskState:
     @yield_requested.setter
     def yield_requested(self, val): self._shared_data["yield_requested"] = val
 
+    def update_job_tokens(self, in_tokens: int, out_tokens: int):
+        self._shared_data["input_tokens"] = in_tokens
+        self._shared_data["output_tokens"] = out_tokens
+
+    def update_job_status(self, msg: str):
+        self._shared_data["sub_status"] = msg
+
+    def update_job_progress(self, ticker: str, date: str):
+        self._shared_data["current_ticker"] = ticker
+        self._shared_data["current_date"] = date
+
     def start_job(self, tickers: List[str], dates: List[str], config: dict, job_id: Optional[str] = None):
         with self.lock:
             self.abort_event.clear()
             self.last_error = None
             self.active_job_id = job_id
+            self._shared_data["input_tokens"] = 0
+            self._shared_data["output_tokens"] = 0
+            self._shared_data["sub_status"] = None
+            self._shared_data["current_ticker"] = None
+            self._shared_data["current_date"] = None
             self.active_job = {
                 "id": job_id,
                 "tickers": tickers,
@@ -74,8 +95,7 @@ class AnalysisTaskState:
                     "quick_model": config.get("quick_think_llm"),
                     "deep_model": config.get("deep_think_llm"),
                     "debate_depth": config.get("max_debate_rounds")
-                },
-                "status_message": None
+                }
             }
 
     def set_error(self, error: str):
@@ -83,6 +103,9 @@ class AnalysisTaskState:
             self.last_error = error
             self.active_job = None
             self.active_job_id = None
+            self._shared_data["input_tokens"] = 0
+            self._shared_data["output_tokens"] = 0
+            self._shared_data["sub_status"] = None
 
     def stop_job(self, yield_after: bool = False):
         with self.lock:
@@ -98,6 +121,26 @@ class AnalysisTaskState:
 
     def is_running(self) -> bool:
         return self.active_job is not None
+
+    def get_status(self) -> dict:
+        with self.lock:
+            job = self.active_job
+            if job:
+                # Inject real-time metrics into the returned job dict
+                job = job.copy()
+                job["input_tokens"] = self._shared_data.get("input_tokens", 0)
+                job["output_tokens"] = self._shared_data.get("output_tokens", 0)
+                job["sub_status"] = self._shared_data.get("sub_status")
+                job["current_ticker"] = self._shared_data.get("current_ticker")
+                job["current_date"] = self._shared_data.get("current_date")
+            
+            return {
+                "running": self.is_running(),
+                "job": job,
+                "last_error": self.last_error,
+                "queue_count": 0, # Should be updated by the caller
+                "is_paused": self.is_paused
+            }
 
 # Global instance
 task_state = AnalysisTaskState()
@@ -174,27 +217,15 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
         task_state.start_job(request.tickers, expanded_dates, config, job_id=request.id)
         
         def progress_cb(ticker: str, date: str):
-            with task_state.lock:
-                job = task_state.active_job
-                if job:
-                    job["current_ticker"] = ticker
-                    job["current_date"] = date
-                    task_state.active_job = job
+            task_state.update_job_progress(ticker, date)
 
         def token_cb(in_tokens: int, out_tokens: int):
-            with task_state.lock:
-                job = task_state.active_job
-                if job:
-                    job["input_tokens"] = in_tokens
-                    job["output_tokens"] = out_tokens
-                    task_state.active_job = job
+            task_state.update_job_tokens(in_tokens, out_tokens)
+            logger.info(f"token_cb: Updated job tokens: in={in_tokens}, out={out_tokens}")
 
         def status_cb(msg: str):
-            with task_state.lock:
-                job = task_state.active_job
-                if job:
-                    job["sub_status"] = msg
-                    task_state.active_job = job
+            task_state.update_job_status(msg)
+            logger.info(f"status_cb: Updated job sub_status: {msg}")
 
         summary = run_batch_analysis(
             tickers=request.tickers,
@@ -379,7 +410,7 @@ def get_analysis_status(background_tasks: BackgroundTasks, registry: RunRegistry
         start_worker_if_needed(background_tasks, registry.db_path, config)
     return {
         "running": task_state.is_running(),
-        "job": task_state.active_job,
+        "job": task_state.get_status().get("job"),
         "last_error": task_state.last_error,
         "queue_count": len(queue),
         "is_paused": task_state.is_paused

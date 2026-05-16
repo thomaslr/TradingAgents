@@ -149,6 +149,11 @@ class TradingAgentsGraph:
             effort = self.config.get("anthropic_effort")
             if effort:
                 kwargs["effort"] = effort
+        
+        elif provider == "ollama":
+            num_ctx = self.config.get("ollama_num_ctx")
+            if num_ctx:
+                kwargs["ollama_num_ctx"] = num_ctx
 
         return kwargs
 

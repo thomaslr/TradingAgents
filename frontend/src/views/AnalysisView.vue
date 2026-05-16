@@ -123,11 +123,17 @@ async function checkStatus() {
       if (isStopping.value) {
         successMessage.value = 'Analysis stopped.'
       } else if (wasRunning) {
-        successMessage.value = 'Analysis complete.'
+        if (status.last_error) {
+          error.value = `Task Failed: ${status.last_error}`
+          successMessage.value = ''
+        } else {
+          successMessage.value = 'Analysis complete.'
+        }
       }
       isStopping.value = false
       isQueueRunning.value = false
       thoughtStreamText.value = ''
+      runningJob.value = null // Clear the active job reference so UI unlocks
     }
 
     if (status.running && status.job) {
@@ -621,7 +627,7 @@ function formatDate(dateStr: string | null): string {
             </div>
 
             <!-- Tokens Rate Pill -->
-            <div v-if="inputTokensPerSec > 0 || outputTokensPerSec > 0" class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+            <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
               <span class="text-yellow-400">THROUGHPUT</span>
               <span class="text-blue-400">{{ inputTokensPerSec }}ᵢ</span> / <span class="text-cyan-400">{{ outputTokensPerSec }}ₒ</span> <small class="text-white/40 ml-1">tps</small>
             </div>
