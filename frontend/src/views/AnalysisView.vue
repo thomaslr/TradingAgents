@@ -620,8 +620,8 @@ function formatDate(dateStr: string | null): string {
               {{ activeConfig?.debate_depth || depth }}
             </div>
 
-            <!-- Tokens Rate Pill -->
-            <div v-if="inputTokensPerSec > 0 || outputTokensPerSec > 0" class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
+            <!-- Tokens Rate Pill (Always visible while running) -->
+            <div v-if="isRunning" class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
               <span class="text-yellow-400">THROUGHPUT</span>
               <span class="text-blue-400">{{ inputTokensPerSec }}ᵢ</span> / <span class="text-cyan-400">{{ outputTokensPerSec }}ₒ</span> <small class="text-white/40 ml-1">tps</small>
             </div>
