@@ -94,10 +94,18 @@ class StatusTracker(BaseCallbackHandler):
                     self.seq_index = i
                     break
         elif any(x in node_name for x in ["Researcher", "Debator"]):
-            status_msg = "Debating"
+            # Use the explicit 'count' field from InvestDebateState
+            count = inputs.get("investment_debate_state", {}).get("count") or 0
+            # Round increases every 2 messages (Bull + Bear)
+            round_num = (count // 2) + 1
+            status_msg = f"Debating (Round {round_num})"
             self.seq_index = 4
         elif any(x in node_name for x in ["Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"]):
-            status_msg = "Finalizing Decision"
+            # Use the explicit 'count' field from RiskDebateState
+            count = inputs.get("risk_debate_state", {}).get("count") or 0
+            # Round increases every 3 messages (Aggressive + Conservative + Neutral)
+            round_num = (count // 3) + 1
+            status_msg = f"Finalizing Decision (Risk Round {round_num})"
             self.seq_index = 5
         elif "Trader" in node_name:
             status_msg = "Planning Trade"
