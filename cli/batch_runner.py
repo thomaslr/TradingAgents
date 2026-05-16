@@ -71,34 +71,37 @@ class StatusTracker(BaseCallbackHandler):
         self.task_id = task_id
         self.external_status_callback = None
         self.current_node = ""
+        # Master sequence for fallback tracking
+        self.sequence = [
+            "Market Analyst", "Social Analyst", "News Analyst", "Fundamentals Analyst",
+            "Debating", "Finalizing Decision", "Planning Trade"
+        ]
+        self.seq_index = 0
 
     def on_chain_start(self, serialized, inputs, **kwargs):
         """Update status when a new node/chain starts."""
-        # LangGraph nodes often put their name in metadata or tags
-        name = serialized.get("name") or ""
-        tags = kwargs.get("tags") or []
         metadata = kwargs.get("metadata") or {}
-        node_name = metadata.get("langgraph_node") or name
+        node_name = metadata.get("langgraph_node") or serialized.get("name") or ""
 
         status_msg = ""
         
         # Match names from trading_graph setup.py
         if any(x in node_name for x in ["Market Analyst", "Social Analyst", "News Analyst", "Fundamentals Analyst"]):
             status_msg = node_name
+            # Sync our sequence index
+            for i, s in enumerate(self.sequence):
+                if s in node_name:
+                    self.seq_index = i
+                    break
         elif any(x in node_name for x in ["Researcher", "Debator"]):
-            # Try to determine the round number from the inputs
-            history = inputs.get("investment_debate_state", {}).get("history") or []
-            round_num = (len(history) // 2) + 1
-            status_msg = f"Debating (Round {round_num})"
+            status_msg = "Debating"
+            self.seq_index = 4
         elif any(x in node_name for x in ["Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"]):
-            # Risk discussion between the 3 risk analysts
-            count = inputs.get("risk_debate_state", {}).get("count") or 0
-            round_num = (count // 3) + 1
-            status_msg = f"Finalizing Decision (Risk Round {round_num})"
+            status_msg = "Finalizing Decision"
+            self.seq_index = 5
         elif "Trader" in node_name:
             status_msg = "Planning Trade"
-        elif "Portfolio Manager" in node_name:
-            status_msg = "Finalizing Decision"
+            self.seq_index = 6
 
         if status_msg:
             self.current_node = status_msg
@@ -106,8 +109,40 @@ class StatusTracker(BaseCallbackHandler):
             if self.external_status_callback:
                 self.external_status_callback(status_msg)
 
+    def on_llm_start(self, serialized, prompts, **kwargs):
+        """Update status when the LLM starts reasoning."""
+        # If we are lost, use the sequence to guess where we are
+        if not self.current_node and self.seq_index < len(self.sequence):
+            self.current_node = self.sequence[self.seq_index]
+
+        if self.external_status_callback:
+            # Signal the 'Reasoning' phase
+            msg = f"PHASE: Reasoning - Analysis in progress..."
+            if self.current_node:
+                self.external_status_callback(f"{self.current_node} - {msg}")
+            else:
+                self.external_status_callback(msg)
+
+    def on_llm_end(self, response, **kwargs):
+        """Update status when the LLM finishes (moving to Reporting)."""
+        if self.external_status_callback:
+            msg = f"PHASE: Reporting - Finalizing report..."
+            if self.current_node:
+                self.external_status_callback(f"{self.current_node} - {msg}")
+            else:
+                self.external_status_callback(msg)
+        
+        # Advance sequence after a report is finished if we were at the start of a phase
+        if self.seq_index < len(self.sequence) - 1:
+            # We don't advance automatically yet, we wait for the next Tool/LLM start
+            pass
+
     def on_tool_start(self, serialized, input_str, **kwargs):
-        """Update the thought stream when a tool is called."""
+        """Update the thought stream when a tool is called (Scraping phase)."""
+        # If we are lost, use the sequence to guess where we are
+        if not self.current_node and self.seq_index < len(self.sequence):
+            self.current_node = self.sequence[self.seq_index]
+
         tool_name = serialized.get("name") or "Tool"
         friendly_names = {
             "get_stock_data": "Fetching historical price data",
@@ -122,15 +157,13 @@ class StatusTracker(BaseCallbackHandler):
         }
         action = friendly_names.get(tool_name, f"Running {tool_name}")
         
-        # We prefix it with the tool name for the thought stream
-        thought_msg = f"Executing: {action}..."
-        
         if self.external_status_callback:
-            # We send a special prefixed message that the UI can handle or just display
+            # Signal the 'Scraping' phase
+            msg = f"PHASE: Scraping - {action}..."
             if self.current_node:
-                self.external_status_callback(f"{self.current_node} - {thought_msg}")
+                self.external_status_callback(f"{self.current_node} - {msg}")
             else:
-                self.external_status_callback(thought_msg)
+                self.external_status_callback(msg)
 
 
 def _expand_dates(date_from: str, date_to: str) -> List[str]:

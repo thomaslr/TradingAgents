@@ -50,6 +50,7 @@ const launchWatchdog = ref(0)
 const runningJob = ref<any>(null)
 const showDeepIntel = ref(false)
 const thoughtStreamText = ref('')
+const currentPhase = ref('') // 'Scraping' | 'Reasoning' | 'Reporting'
 
 const pipelineSteps = [
   'Market Analyst',
@@ -148,13 +149,26 @@ async function checkStatus() {
       // If backend has a job ID, we are likely in a queue run
       isQueueRunning.value = !!status.job.id
 
-      // Extract the thought stream text if it contains the tool executing prefix
+      // Extract the thought stream text and phase
       const msg = status.job.sub_status || ''
-      if (msg.includes('Executing:')) {
+      if (msg.includes('PHASE:')) {
+        // Extract phase: "PHASE: Reasoning"
+        const phaseMatch = msg.match(/PHASE: ([^ -]+)/)
+        if (phaseMatch) currentPhase.value = phaseMatch[1]
+        
+        // Clean text for display: "Analysis in progress..."
+        const parts = msg.split(' - ')
+        const displayMsg = parts.length > 1 ? parts[parts.length - 1] : msg
+        thoughtStreamText.value = displayMsg.replace(/PHASE: [^ ]+ - /, '')
+      } else if (msg.includes('Executing:')) {
+        currentPhase.value = 'Scraping'
         thoughtStreamText.value = msg.substring(msg.indexOf('Executing:'))
       } else if (msg) {
-        // Display high-level status as is (e.g., "Debating (Round 1)" or "Market Analyst")
         thoughtStreamText.value = msg
+        // Reset phase if it's a high-level step change
+        if (pipelineSteps.some(s => msg === s)) {
+          currentPhase.value = 'Scraping'
+        }
       }
 
       // Calculate Token Rates (every ~5s)
@@ -730,6 +744,22 @@ function formatDate(dateStr: string | null): string {
                 {{ runningJob.sub_status }}
               </div>
             </div>
+
+            <!-- Micro Progress Bar -->
+            <div class="relative h-1 bg-white/5 rounded-full overflow-hidden mt-2 mb-4">
+              <div 
+                class="absolute inset-y-0 left-0 bg-[var(--color-accent-primary)] transition-all duration-1000 ease-in-out"
+                :style="{ width: currentPhase === 'Scraping' ? '33.33%' : (currentPhase === 'Reasoning' ? '66.66%' : (currentPhase === 'Reporting' ? '100%' : '0%')) }"
+              ></div>
+              <div v-if="currentPhase" class="absolute inset-y-0 left-0 bg-white/20 animate-pulse" :style="{ width: currentPhase === 'Scraping' ? '33.33%' : (currentPhase === 'Reasoning' ? '66.66%' : (currentPhase === 'Reporting' ? '100%' : '0%')) }"></div>
+            </div>
+
+            <!-- Labels for the Micro Progress Bar -->
+            <div class="flex justify-between text-[8px] font-black uppercase tracking-[0.2em] opacity-40 mb-2">
+              <span class="transition-all duration-500" :class="currentPhase === 'Scraping' ? 'text-[var(--color-accent-primary)] opacity-100 scale-110' : ''">Scraping</span>
+              <span class="transition-all duration-500" :class="currentPhase === 'Reasoning' ? 'text-[var(--color-accent-primary)] opacity-100 scale-110' : ''">Reasoning</span>
+              <span class="transition-all duration-500" :class="currentPhase === 'Reporting' ? 'text-[var(--color-accent-primary)] opacity-100 scale-110' : ''">Reporting</span>
+            </div>
             
             <div class="font-mono text-[13px] text-white/80 leading-relaxed italic bg-black/20 p-4 rounded-lg border border-white/5">
               <span v-if="runningJob?.sub_status" class="text-yellow-400 font-bold mr-2">[{{ runningJob.sub_status }}]:</span>
@@ -897,7 +927,21 @@ function formatDate(dateStr: string | null): string {
             </div>
 
             <!-- Action Buttons -->
-            <div class="pt-8 border-t border-[var(--color-border-default)] flex flex-wrap gap-4">
+            <div class="pt-8 border-t border-[var(--color-border-default)] flex flex-wrap items-center gap-6">
+              <!-- Force Refresh Toggle -->
+              <div 
+                class="flex items-center gap-3 px-4 py-3 bg-black/20 rounded-xl border border-white/5 cursor-pointer hover:bg-black/40 transition-all select-none"
+                @click="force = !force"
+              >
+                <div class="relative w-10 h-6 rounded-full transition-colors duration-300" :class="force ? 'bg-amber-500' : 'bg-white/10'">
+                  <div class="absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-300 shadow-sm" :class="force ? 'translate-x-4' : ''"></div>
+                </div>
+                <div class="flex flex-col">
+                  <span class="text-[9px] font-black uppercase tracking-widest transition-colors" :class="force ? 'text-amber-400' : 'text-white/40'">Force Refresh</span>
+                  <span class="text-[8px] opacity-30 -mt-1 uppercase font-black">Bypass Data Cache</span>
+                </div>
+              </div>
+
               <template v-if="activeTab === 'research'">
                 <button
                   v-if="!isRunning"
