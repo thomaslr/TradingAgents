@@ -181,8 +181,17 @@ class TradingMemoryLog:
         text = self._log_path.read_text(encoding="utf-8")
         blocks = text.split(self._SEPARATOR)
 
-        # Build lookup keyed by (trade_date, ticker) for O(1) dispatch
-        update_map = {(u["trade_date"], u["ticker"]): u for u in updates}
+        # Build lookup keyed by configuration parameters to uniquely identify matching blocks
+        update_map = {}
+        for u in updates:
+            key = (
+                u["trade_date"],
+                u["ticker"],
+                u.get("quick_model", "unknown"),
+                u.get("deep_model", "unknown"),
+                str(u.get("depth", "1"))
+            )
+            update_map[key] = u
 
         new_blocks = []
         for block in blocks:
@@ -195,24 +204,44 @@ class TradingMemoryLog:
             tag_line = lines[0].strip()
 
             matched = False
-            for (trade_date, ticker), upd in list(update_map.items()):
-                pending_prefix = f"[{trade_date} | {ticker} |"
-                if tag_line.startswith(pending_prefix) and tag_line.endswith("| pending]"):
-                    fields = [f.strip() for f in tag_line[1:-1].split("|")]
-                    rating = fields[2]
-                    raw_pct = f"{upd['raw_return']:+.1%}"
-                    alpha_pct = f"{upd['alpha_return']:+.1%}"
-                    new_tag = (
-                        f"[{trade_date} | {ticker} | {rating}"
-                        f" | {raw_pct} | {alpha_pct} | {upd['holding_days']}d]"
-                    )
-                    rest = "\n".join(lines[1:])
-                    new_blocks.append(
-                        f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{upd['reflection']}"
-                    )
-                    del update_map[(trade_date, ticker)]
-                    matched = True
-                    break
+            if tag_line.startswith("[") and (" | pending" in tag_line or tag_line.endswith("| pending]")):
+                fields = [f.strip() for f in tag_line[1:-1].split("|")]
+                if len(fields) >= 4:
+                    block_date = fields[0]
+                    block_ticker = fields[1]
+                    block_quick = fields[4] if len(fields) > 4 else "unknown"
+                    block_deep = fields[5] if len(fields) > 5 else "unknown"
+                    block_depth = fields[6] if len(fields) > 6 else "1"
+                    
+                    key = (block_date, block_ticker, block_quick, block_deep, block_depth)
+                    if key in update_map:
+                        upd = update_map[key]
+                        rating = fields[2]
+                        raw_pct = f"{upd['raw_return']:+.1%}"
+                        alpha_pct = f"{upd['alpha_return']:+.1%}"
+                        
+                        # Preserve metadata fields after the outcome fields:
+                        # [date | ticker | rating | raw | alpha | holding | quick_model | deep_model | depth | runtime]
+                        new_fields = [
+                            block_date,
+                            block_ticker,
+                            rating,
+                            raw_pct,
+                            alpha_pct,
+                            f"{upd['holding_days']}d",
+                            block_quick,
+                            block_deep,
+                            block_depth,
+                            fields[7] if len(fields) > 7 else "0.0"
+                        ]
+                        new_tag = "[" + " | ".join(new_fields) + "]"
+                        
+                        rest = "\n".join(lines[1:])
+                        new_blocks.append(
+                            f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{upd['reflection']}"
+                        )
+                        del update_map[key]
+                        matched = True
 
             if not matched:
                 new_blocks.append(block)
@@ -245,7 +274,7 @@ class TradingMemoryLog:
             is_resolved = (
                 tag_line.startswith("[")
                 and tag_line.endswith("]")
-                and not tag_line.endswith("| pending]")
+                and " | pending" not in tag_line
             )
             decisions.append((block, is_resolved))
 

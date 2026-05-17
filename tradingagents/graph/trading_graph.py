@@ -241,13 +241,21 @@ class TradingAgentsGraph:
         try:
             registry = RunRegistry(self.config["db_path"])
             for upd in updates:
+                # Use metadata from the update if present (from resolved pending entry), fallback to current config
+                qm = upd.get("quick_model") or self.config.get("quick_think_llm", "unknown")
+                dm = upd.get("deep_model") or self.config.get("deep_think_llm", "unknown")
+                try:
+                    d_val = int(upd.get("depth")) if upd.get("depth") is not None else int(self.config.get("max_debate_rounds", 1))
+                except (ValueError, TypeError):
+                    d_val = int(self.config.get("max_debate_rounds", 1))
+
                 registry.mark_outcome_by_key(
                     ticker=upd["ticker"],
                     trade_date=upd["trade_date"],
                     provider=self.config.get("llm_provider", "unknown"),
-                    quick_model=self.config.get("quick_think_llm", "unknown"),
-                    deep_model=self.config.get("deep_think_llm", "unknown"),
-                    depth=self.config.get("max_debate_rounds", 1),
+                    quick_model=qm,
+                    deep_model=dm,
+                    depth=d_val,
                     raw_return=upd["raw_return"],
                     alpha_return=upd["alpha_return"],
                     holding_days=upd["holding_days"],
@@ -288,6 +296,11 @@ class TradingAgentsGraph:
                 "alpha_return": alpha,
                 "holding_days": days,
                 "reflection": reflection,
+                # Propagate config metadata to differentiate matching blocks in batch_update
+                "quick_model": entry.get("quick_model", "unknown"),
+                "deep_model": entry.get("deep_model", "unknown"),
+                "depth": entry.get("depth", "1"),
+                "runtime_sec": entry.get("runtime_sec", "0.0"),
             })
 
         if updates:
@@ -392,13 +405,87 @@ class TradingAgentsGraph:
 
     def _log_state(self, trade_date, final_state) -> Path:
         """Log the final state to a JSON file using a Simulation ID."""
+        # Simulation ID Logic: reports/{ticker}/{date}/{sim_id}.json
+        safe_ticker = safe_ticker_component(self.ticker)
+        quick_model = self.config.get("quick_think_llm", "unknown").replace(":", "-")
+        deep_model = self.config.get("deep_think_llm", "unknown").replace(":", "-")
+        depth = self.config.get("max_debate_rounds", 1)
+
+        ts = datetime.now().strftime("%H%M%S")
+        sim_id = f"{quick_model}_{deep_model}_d{depth}_{ts}"
+        directory = Path(self.config["results_dir"]) / safe_ticker / str(trade_date)
+        directory.mkdir(parents=True, exist_ok=True)
+
+        market_rep = final_state["market_report"]
+        sentiment_rep = final_state["sentiment_report"]
+        news_rep = final_state["news_report"]
+        fundamentals_rep = final_state["fundamentals_report"]
+
+        # De-duplicate & symlink logic using database entries
+        from tradingagents.db.registry import RunRegistry
+        db_path = self.config.get("db_path")
+        if db_path:
+            try:
+                registry = RunRegistry(db_path)
+                cursor = registry.conn.cursor()
+                cursor.execute(
+                    "SELECT analyst_type, file_path FROM analyst_reports WHERE ticker = ? AND trade_date = ? AND model = ?",
+                    (self.ticker, str(trade_date), self.config.get("quick_think_llm", "unknown"))
+                )
+                rows = cursor.fetchall()
+                registry.close()
+                
+                cached_paths = {analyst_type: file_path for analyst_type, file_path in rows}
+                
+                if "market" in cached_paths:
+                    market_rep = {"cached": True, "shared_path": cached_paths["market"]}
+                    try:
+                        symlink_path = directory / f"{sim_id}_market.json"
+                        if symlink_path.exists() or symlink_path.is_symlink():
+                            symlink_path.unlink()
+                        os.symlink(cached_paths["market"], symlink_path)
+                    except Exception as sym_err:
+                        logger.warning(f"Could not create physical symlink for market report: {sym_err}")
+
+                if "social" in cached_paths:
+                    sentiment_rep = {"cached": True, "shared_path": cached_paths["social"]}
+                    try:
+                        symlink_path = directory / f"{sim_id}_social.json"
+                        if symlink_path.exists() or symlink_path.is_symlink():
+                            symlink_path.unlink()
+                        os.symlink(cached_paths["social"], symlink_path)
+                    except Exception as sym_err:
+                        logger.warning(f"Could not create physical symlink for social report: {sym_err}")
+
+                if "news" in cached_paths:
+                    news_rep = {"cached": True, "shared_path": cached_paths["news"]}
+                    try:
+                        symlink_path = directory / f"{sim_id}_news.json"
+                        if symlink_path.exists() or symlink_path.is_symlink():
+                            symlink_path.unlink()
+                        os.symlink(cached_paths["news"], symlink_path)
+                    except Exception as sym_err:
+                        logger.warning(f"Could not create physical symlink for news report: {sym_err}")
+
+                if "fundamentals" in cached_paths:
+                    fundamentals_rep = {"cached": True, "shared_path": cached_paths["fundamentals"]}
+                    try:
+                        symlink_path = directory / f"{sim_id}_fundamentals.json"
+                        if symlink_path.exists() or symlink_path.is_symlink():
+                            symlink_path.unlink()
+                        os.symlink(cached_paths["fundamentals"], symlink_path)
+                    except Exception as sym_err:
+                        logger.warning(f"Could not create physical symlink for fundamentals report: {sym_err}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch cached paths for state logging: {e}")
+
         self.log_states_dict[str(trade_date)] = {
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
-            "market_report": final_state["market_report"],
-            "sentiment_report": final_state["sentiment_report"],
-            "news_report": final_state["news_report"],
-            "fundamentals_report": final_state["fundamentals_report"],
+            "market_report": market_rep,
+            "sentiment_report": sentiment_rep,
+            "news_report": news_rep,
+            "fundamentals_report": fundamentals_rep,
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],
@@ -421,20 +508,7 @@ class TradingAgentsGraph:
             "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],
         }
-
-        # Simulation ID Logic: reports/{ticker}/{date}/{sim_id}.json
-        safe_ticker = safe_ticker_component(self.ticker)
-        quick_model = self.config.get("quick_think_llm", "unknown").replace(":", "-")
-        deep_model = self.config.get("deep_think_llm", "unknown").replace(":", "-")
-        depth = self.config.get("max_debate_rounds", 1)
-
-        ts = datetime.now().strftime("%H%M%S")
         
-        sim_id = f"{quick_model}_{deep_model}_d{depth}_{ts}"
-        
-        directory = Path(self.config["results_dir"]) / safe_ticker / str(trade_date)
-        directory.mkdir(parents=True, exist_ok=True)
-
         log_path = directory / f"{sim_id}.json"
         
         with open(log_path, "w", encoding="utf-8") as f:

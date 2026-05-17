@@ -8,6 +8,7 @@ trading output, and completion status.  The database lives at
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +70,42 @@ CREATE TABLE IF NOT EXISTS research_queue (
     started_at      TEXT,
     completed_at    TEXT
 );
+
+CREATE TABLE IF NOT EXISTS analysis_metrics (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          INTEGER, -- Links to the 'runs' table
+    ticker          TEXT,
+    trade_date      TEXT,
+    quick_model     TEXT,
+    deep_model      TEXT,
+    -- Timing metrics (seconds)
+    market_sec      REAL DEFAULT 0,
+    social_sec      REAL DEFAULT 0,
+    news_sec        REAL DEFAULT 0,
+    fund_sec        REAL DEFAULT 0,
+    debate_sec      REAL DEFAULT 0,
+    decision_sec    REAL DEFAULT 0,
+    total_sec       REAL DEFAULT 0,
+    -- Token metrics
+    input_tokens    INTEGER DEFAULT 0,
+    output_tokens   INTEGER DEFAULT 0,
+    avg_tps         REAL DEFAULT 0,
+    depth           INTEGER DEFAULT 1,
+    -- Metadata
+    created_at      TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS analyst_reports (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker          TEXT NOT NULL,
+    trade_date      TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    analyst_type    TEXT NOT NULL,
+    file_path       TEXT NOT NULL,
+    prompt_hash     TEXT NOT NULL,
+    created_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(ticker, trade_date, model, analyst_type)
+);
 """
 
 # Columns added after the initial schema.  Each entry is
@@ -122,7 +159,7 @@ class RunRegistry:
         self.db_path = db_path
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA journal_mode=TRUNCATE")
         self._ensure_schema()
 
     # ------------------------------------------------------------------
@@ -264,6 +301,55 @@ class RunRegistry:
         Joins with simulation_configs to include label and color.
         Only returns runs where outcome_status = 'resolved'.
         """
+        # Auto-resolve completed but pending runs on the fly to self-heal the dashboard
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id, ticker, trade_date, time_horizon FROM runs WHERE status = 'completed' AND outcome_status = 'pending'")
+            pending_rows = cursor.fetchall()
+            if pending_rows:
+                import yfinance as yf
+                from datetime import datetime, timedelta
+                import re
+                
+                for r_id, tick, t_date, t_horizon in pending_rows:
+                    try:
+                        holding_days = 5
+                        if t_horizon:
+                            match = re.search(r"(\d+)", str(t_horizon))
+                            if match:
+                                holding_days = int(match.group(1))
+                                
+                        start = datetime.strptime(t_date, "%Y-%m-%d")
+                        end = start + timedelta(days=holding_days + 7)
+                        end_str = end.strftime("%Y-%m-%d")
+                        
+                        stock_hist = yf.Ticker(tick).history(start=t_date, end=end_str)
+                        spy_hist = yf.Ticker("SPY").history(start=t_date, end=end_str)
+                        
+                        if len(stock_hist) >= 2 and len(spy_hist) >= 2:
+                            actual_days = min(holding_days, len(stock_hist) - 1, len(spy_hist) - 1)
+                            raw = float(
+                                (stock_hist["Close"].iloc[actual_days] - stock_hist["Close"].iloc[0])
+                                / stock_hist["Close"].iloc[0]
+                            )
+                            spy_ret = float(
+                                (spy_hist["Close"].iloc[actual_days] - spy_hist["Close"].iloc[0])
+                                / spy_hist["Close"].iloc[0]
+                            )
+                            alpha = raw - spy_ret
+                            
+                            self.mark_outcome(
+                                run_id=r_id,
+                                raw_return=raw,
+                                alpha_return=alpha,
+                                holding_days=actual_days,
+                                reflection="Outcome resolved automatically by Performance Dashboard sync."
+                            )
+                    except Exception as ex:
+                        print(f"Auto-resolve failed for run {r_id}: {ex}")
+        except Exception as e:
+            print(f"Failed to auto-resolve pending runs: {e}")
+
         clauses = ["r.outcome_status = 'resolved'"]
         params: List[Any] = []
         if ticker:
@@ -446,14 +532,62 @@ class RunRegistry:
         self.conn.commit()
 
     def delete_run(self, run_id: int) -> None:
-        """Remove a run entry (used by --force to allow re-creation)."""
+        """Remove a run entry and cleanup orphaned configs."""
+        # Get config_id before deleting
+        row = self.conn.execute("SELECT config_id FROM runs WHERE id = ?", (run_id,)).fetchone()
+        config_id = row[0] if row else None
+        
         self.conn.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+        self.conn.execute("DELETE FROM analysis_metrics WHERE run_id = ?", (run_id,))
         self.conn.commit()
+        
+        if config_id:
+            self.cleanup_orphaned_configs(config_id)
 
     def delete_runs_for_ticker_date(self, ticker: str, trade_date: str) -> None:
         """Remove all runs for a specific ticker and date."""
+        # Get all unique config_ids affected
+        rows = self.conn.execute(
+            "SELECT DISTINCT config_id FROM runs WHERE ticker = ? AND trade_date = ?", 
+            (ticker, trade_date)
+        ).fetchall()
+        config_ids = [r[0] for r in rows if r[0]]
+        
+        # Get run IDs to delete metrics
+        cursor = self.conn.execute(
+            "SELECT id FROM runs WHERE ticker = ? AND trade_date = ?", (ticker, trade_date)
+        )
+        run_ids = [row[0] for row in cursor.fetchall()]
+        
+        if run_ids:
+            placeholders = ",".join("?" * len(run_ids))
+            self.conn.execute(f"DELETE FROM analysis_metrics WHERE run_id IN ({placeholders})", run_ids)
+
         self.conn.execute("DELETE FROM runs WHERE ticker = ? AND trade_date = ?", (ticker, trade_date))
         self.conn.commit()
+        
+        # Cascade delete to cached analyst reports
+        self.delete_cached_analyst_reports_for_ticker_date(ticker, trade_date)
+        
+        for cid in config_ids:
+            self.cleanup_orphaned_configs(cid)
+
+    def cleanup_orphaned_configs(self, config_id: Optional[str] = None) -> None:
+        """Remove configurations that have no associated runs."""
+        if config_id:
+            # Check if this specific config is orphaned
+            count = self.conn.execute(
+                "SELECT COUNT(*) FROM runs WHERE config_id = ?", (config_id,)
+            ).fetchone()[0]
+            if count == 0:
+                self.conn.execute("DELETE FROM simulation_configs WHERE config_id = ?", (config_id,))
+                self.conn.commit()
+        else:
+            # Global cleanup
+            self.conn.execute(
+                "DELETE FROM simulation_configs WHERE config_id NOT IN (SELECT DISTINCT config_id FROM runs)"
+            )
+            self.conn.commit()
 
     # ── Research Queue Management ──────────────────────────
 
@@ -532,6 +666,11 @@ class RunRegistry:
         self.conn.execute("DELETE FROM research_queue")
         self.conn.commit()
 
+    def clear_metrics(self):
+        """Nuclear wipe of all research benchmarks."""
+        self.conn.execute("DELETE FROM analysis_metrics")
+        self.conn.commit()
+
     def update_queue_status(self, job_id: str, status: str, error: Optional[str] = None):
         """Update job lifecycle state."""
         now = _now_iso()
@@ -564,6 +703,143 @@ class RunRegistry:
             return pending[0]
         return None
 
+
+    def list_metrics(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """List historical analysis metrics, sorted by most recent completed run."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT 
+                    COALESCE(m.id, r.id) AS id,
+                    m.id AS metrics_id,
+                    r.id AS run_id,
+                    r.ticker,
+                    r.trade_date,
+                    r.quick_model,
+                    r.deep_model,
+                    r.depth,
+                    COALESCE(m.market_sec, 0) AS market_sec,
+                    COALESCE(m.social_sec, 0) AS social_sec,
+                    COALESCE(m.news_sec, 0) AS news_sec,
+                    COALESCE(m.fund_sec, 0) AS fund_sec,
+                    COALESCE(m.debate_sec, 0) AS debate_sec,
+                    COALESCE(m.decision_sec, 0) AS decision_sec,
+                    COALESCE(m.total_sec, r.runtime_sec, 0) AS total_sec,
+                    COALESCE(m.input_tokens, 0) AS input_tokens,
+                    COALESCE(m.output_tokens, 0) AS output_tokens,
+                    COALESCE(m.avg_tps, 0) AS avg_tps,
+                    COALESCE(m.created_at, r.completed_at) AS created_at
+                FROM runs r
+                LEFT JOIN analysis_metrics m ON r.id = m.run_id
+                WHERE r.status = 'completed'
+                ORDER BY r.completed_at DESC
+                LIMIT ?
+                """,
+                (limit,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_cached_analyst_report(
+        self, ticker: str, trade_date: str, model: str, analyst_type: str, prompt_hash: str
+    ) -> Optional[str]:
+        """Fetch a cached analyst report. Self-heals if the file doesn't exist anymore."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT id, file_path, prompt_hash FROM analyst_reports WHERE ticker = ? AND trade_date = ? AND model = ? AND analyst_type = ?",
+            (ticker, trade_date, model, analyst_type)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        
+        db_id, file_path, db_prompt_hash = row
+        # Automatic invalidation if system prompt hash differs
+        if db_prompt_hash != prompt_hash:
+            return None
+            
+        p = Path(file_path)
+        if not p.exists():
+            # Self-healing delete
+            self.conn.execute("DELETE FROM analyst_reports WHERE id = ?", (db_id,))
+            self.conn.commit()
+            return None
+            
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("report")
+        except Exception:
+            return None
+
+    def save_cached_analyst_report(
+        self, ticker: str, trade_date: str, model: str, analyst_type: str, file_path: str, prompt_hash: str
+    ) -> None:
+        """Insert or replace a cached analyst report record."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO analyst_reports (ticker, trade_date, model, analyst_type, file_path, prompt_hash) VALUES (?, ?, ?, ?, ?, ?)",
+            (ticker, trade_date, model, analyst_type, file_path, prompt_hash)
+        )
+        self.conn.commit()
+
+    def delete_cached_analyst_reports_for_ticker_date(self, ticker: str, trade_date: str) -> None:
+        """Delete cached reports and files for a specific ticker and date."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT id, file_path FROM analyst_reports WHERE ticker = ? AND trade_date = ?",
+            (ticker, trade_date)
+        )
+        rows = cursor.fetchall()
+        for db_id, file_path in rows:
+            p = Path(file_path)
+            if p.exists():
+                p.unlink(missing_ok=True)
+            self.conn.execute("DELETE FROM analyst_reports WHERE id = ?", (db_id,))
+        self.conn.commit()
+
+    def clear_analyst_cache(self) -> Dict[str, Any]:
+        """Nuclear wipe of all cached analyst reports, deleting the actual files."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT file_path FROM analyst_reports")
+        rows = cursor.fetchall()
+        deleted_count = 0
+        for (file_path,) in rows:
+            p = Path(file_path)
+            if p.exists():
+                p.unlink(missing_ok=True)
+                deleted_count += 1
+        
+        self.conn.execute("DELETE FROM analyst_reports")
+        self.conn.commit()
+        
+        # Also clean up the shared_reports directory if it exists
+        shared_dir = Path(self.db_path).parent / "shared_reports"
+        if shared_dir.exists():
+            import shutil
+            shutil.rmtree(shared_dir, ignore_errors=True)
+            
+        return {"status": "success", "deleted_files": deleted_count}
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get database cache statistics."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*), COUNT(DISTINCT ticker) FROM analyst_reports")
+        row = cursor.fetchone()
+        total_reports = row[0] if row else 0
+        unique_tickers = row[1] if row else 0
+        
+        # Estimate: each report average 30,000 input tokens + 2,000 output tokens saved
+        # 32,000 tokens saved per report
+        estimated_tokens_saved = total_reports * 32000
+        estimated_seconds_saved = total_reports * 15 # average 15 seconds run per analyst
+        
+        return {
+            "total_reports": total_reports or 0,
+            "unique_tickers": unique_tickers or 0,
+            "estimated_tokens_saved": estimated_tokens_saved or 0,
+            "estimated_seconds_saved": estimated_seconds_saved or 0
+        }
 
     def close(self) -> None:
         self.conn.close()

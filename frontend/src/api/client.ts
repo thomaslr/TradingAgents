@@ -29,7 +29,7 @@ export interface Run {
   report_dir: string | null
 }
 
-export async function fetchRuns(ticker?: string, status?: string, limit = 100): Promise<Run[]> {
+export async function fetchRuns(ticker?: string, status?: string, limit = 1000): Promise<Run[]> {
   const params: Record<string, string | number> = { limit }
   if (ticker) params.ticker = ticker
   if (status) params.status = status
@@ -305,5 +305,50 @@ export async function fetchPerformanceData(params?: {
   date_to?: string
 }): Promise<PerformanceEntry[]> {
   const { data } = await api.get<PerformanceEntry[]>('/runs/performance', { params })
+  return data
+}
+
+// ── Metrics ─────────────────────────────────────────────
+export interface AnalysisMetrics {
+  id: number
+  metrics_id?: number | null
+  run_id: number
+  ticker: string
+  trade_date: string
+  quick_model: string
+  deep_model: string
+  market_sec: number
+  social_sec: number
+  news_sec: number
+  fund_sec: number
+  debate_sec: number
+  decision_sec: number
+  total_sec: number
+  input_tokens: number
+  output_tokens: number
+  avg_tps: number
+  depth: number
+  created_at: string
+}
+
+export async function fetchMetrics(limit = 100): Promise<AnalysisMetrics[]> {
+  const { data } = await api.get<AnalysisMetrics[]>('/runs/metrics', { params: { limit } })
+  return data
+}
+
+export interface CacheStats {
+  total_reports: number
+  unique_tickers: number
+  estimated_tokens_saved: number
+  estimated_seconds_saved: number
+}
+
+export async function fetchCacheStats(): Promise<CacheStats> {
+  const { data } = await api.get<CacheStats>('/analysis/cache/stats')
+  return data
+}
+
+export async function clearAnalystCache(): Promise<{ status: string; deleted_files: number }> {
+  const { data } = await api.delete<{ status: string; deleted_files: number }>('/analysis/cache')
   return data
 }

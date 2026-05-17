@@ -218,6 +218,16 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
         
         def progress_cb(ticker: str, date: str):
             task_state.update_job_progress(ticker, date)
+            with task_state.lock:
+                job = task_state.active_job
+                if job:
+                    # Reset started_at timer when we transition to a new ticker or date
+                    if job.get("current_ticker") != ticker or job.get("current_date") != date:
+                        job = job.copy()
+                        job["started_at"] = datetime.now().isoformat()
+                        job["current_ticker"] = ticker
+                        job["current_date"] = date
+                        task_state.active_job = job
 
         def token_cb(in_tokens: int, out_tokens: int):
             task_state.update_job_tokens(in_tokens, out_tokens)
@@ -435,6 +445,7 @@ async def purge_analysis(registry: RunRegistry = Depends(get_registry)):
             task_state.worker_process.join(timeout=2)
         
         registry.clear_queue()
+        registry.clear_metrics()
         cache_dir = os.environ.get("TRADINGAGENTS_CACHE_DIR", "data/cache")
         if os.path.exists(cache_dir):
             try:
@@ -445,3 +456,19 @@ async def purge_analysis(registry: RunRegistry = Depends(get_registry)):
                 logger.error(f"Purge error: {e}")
         task_state.active_job = None
     return {"status": "success"}
+
+@router.get("/cache/stats")
+def get_cache_stats(registry: RunRegistry = Depends(get_registry)):
+    """Fetch analyst report cache metrics and estimates."""
+    try:
+        return registry.get_cache_stats()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch cache stats: {str(e)}")
+
+@router.delete("/cache")
+def clear_analyst_cache(registry: RunRegistry = Depends(get_registry)):
+    """Nuclear purge of the cached analyst report records and physical files."""
+    try:
+        return registry.clear_analyst_cache()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear analyst cache: {str(e)}")

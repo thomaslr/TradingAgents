@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { RouterView, RouterLink, useRoute } from 'vue-router'
-import { LayoutDashboard, CandlestickChart, FileText, CalendarClock, Trophy } from 'lucide-vue-next'
+import { LayoutDashboard, CandlestickChart, FileText, CalendarClock, Trophy, Beaker } from 'lucide-vue-next'
 
 import { computed } from 'vue'
 
@@ -13,6 +13,7 @@ const navItems = [
   { name: 'chart', label: 'Charts', icon: CandlestickChart, to: '/chart/SPY' },
   { name: 'report', label: 'Reports', icon: FileText, to: '/report/SPY/2026-05-06' },
   { name: 'performance', label: 'Performance', icon: Trophy, to: '/performance' },
+  { name: 'research', label: 'Research Lab', icon: Beaker, to: '/research' },
 ]
 
 </script>

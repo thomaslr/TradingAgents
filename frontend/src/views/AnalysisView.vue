@@ -50,6 +50,47 @@ const launchWatchdog = ref(0)
 const runningJob = ref<any>(null)
 const showDeepIntel = ref(false)
 const thoughtStreamText = ref('')
+const currentPhase = ref('') // 'Scraping' | 'Reasoning' | 'Reporting'
+const elapsedTimeText = ref('')
+let elapsedInterval: any = null
+
+function updateElapsedTime() {
+  if (!isRunning.value || !runningJob.value || !runningJob.value.started_at) {
+    elapsedTimeText.value = ''
+    return
+  }
+  
+  const rawStr = runningJob.value.started_at
+  const parsedAsLocal = new Date(rawStr).getTime()
+  
+  // Try parsing as UTC (force Z suffix if not present)
+  let utcStr = rawStr
+  if (!utcStr.endsWith('Z') && !utcStr.includes('+')) {
+    // If it contains a timezone offset like -05:00, don't append Z
+    const hasOffset = /[-+]\d{2}:?\d{2}$/.test(utcStr)
+    if (!hasOffset) {
+      utcStr += 'Z'
+    }
+  }
+  const parsedAsUtc = new Date(utcStr).getTime()
+  
+  const now = Date.now()
+  const diffLocal = isNaN(parsedAsLocal) ? Infinity : Math.abs(now - parsedAsLocal)
+  const diffUtc = isNaN(parsedAsUtc) ? Infinity : Math.abs(now - parsedAsUtc)
+  
+  // Pick the interpretation that is closer to the current time
+  const startMs = diffLocal < diffUtc ? parsedAsLocal : parsedAsUtc
+  
+  if (isNaN(startMs)) {
+    elapsedTimeText.value = ''
+    return
+  }
+  
+  const diffSec = Math.max(0, Math.floor((now - startMs) / 1000))
+  const minutes = Math.floor(diffSec / 60)
+  const seconds = diffSec % 60
+  elapsedTimeText.value = `${minutes}m ${seconds.toString().padStart(2, '0')}s`
+}
 
 const pipelineSteps = [
   'Market Analyst',
@@ -100,10 +141,19 @@ onMounted(async () => {
   checkStatus()
   // Start polling for status
   statusPolling = setInterval(checkStatus, 3000)
+  // Smooth 1s real-time timer
+  elapsedInterval = setInterval(() => {
+    if (isRunning.value && runningJob.value?.started_at) {
+      updateElapsedTime()
+    } else {
+      elapsedTimeText.value = ''
+    }
+  }, 1000)
 })
 
 onUnmounted(() => {
   if (statusPolling) clearInterval(statusPolling)
+  if (elapsedInterval) clearInterval(elapsedInterval)
 })
 
 async function checkStatus() {
@@ -132,12 +182,22 @@ async function checkStatus() {
       }
       isStopping.value = false
       isQueueRunning.value = false
+      isRunning.value = false
       thoughtStreamText.value = ''
       runningJob.value = null // Clear the active job reference so UI unlocks
+      currentPhase.value = ''
     }
 
     if (status.running && status.job) {
+      const prevStartedAt = runningJob.value?.started_at
+      const prevTicker = runningJob.value?.current_ticker
+      const prevDate = runningJob.value?.current_date
+
       runningJob.value = status.job
+
+      if (status.job.started_at !== prevStartedAt || status.job.current_ticker !== prevTicker || status.job.current_date !== prevDate) {
+        updateElapsedTime()
+      }
       isProcessingQueue.value = false // We've confirmed it's running
       activeConfig.value = status.job.config
       activeJobMessage.value = status.job.status_message
@@ -154,13 +214,26 @@ async function checkStatus() {
       // If backend has a job ID, we are likely in a queue run
       isQueueRunning.value = !!status.job.id
 
-      // Extract the thought stream text if it contains the tool executing prefix
+      // Extract the thought stream text and phase
       const msg = status.job.sub_status || ''
-      if (msg.includes('Executing:')) {
+      if (msg.includes('PHASE:')) {
+        // Extract phase: "PHASE: Reasoning"
+        const phaseMatch = msg.match(/PHASE: ([^ -]+)/)
+        if (phaseMatch) currentPhase.value = phaseMatch[1]
+        
+        // Clean text for display: "Analysis in progress..."
+        const parts = msg.split(' - ')
+        const displayMsg = parts.length > 1 ? parts[parts.length - 1] : msg
+        thoughtStreamText.value = displayMsg.replace(/PHASE: [^ ]+ - /, '')
+      } else if (msg.includes('Executing:')) {
+        currentPhase.value = 'Scraping'
         thoughtStreamText.value = msg.substring(msg.indexOf('Executing:'))
       } else if (msg) {
-        // Display high-level status as is (e.g., "Debating (Round 1)" or "Market Analyst")
         thoughtStreamText.value = msg
+        // Reset phase if it's a high-level step change
+        if (pipelineSteps.some(s => msg === s)) {
+          currentPhase.value = 'Scraping'
+        }
       }
 
       // Calculate Token Rates (every ~5s)
@@ -626,7 +699,7 @@ function formatDate(dateStr: string | null): string {
               {{ activeConfig?.debate_depth || depth }}
             </div>
 
-            <!-- Tokens Rate Pill -->
+            <!-- Tokens Rate Pill (Always visible while running) -->
             <div class="text-white text-[10px] font-black bg-black/40 px-3 py-1.5 rounded-md flex items-center gap-2 border border-white/10">
               <span class="text-yellow-400">THROUGHPUT</span>
               <span class="text-blue-400">{{ inputTokensPerSec }}ᵢ</span> / <span class="text-cyan-400">{{ outputTokensPerSec }}ₒ</span> <small class="text-white/40 ml-1">tps</small>
@@ -732,9 +805,32 @@ function formatDate(dateStr: string | null): string {
                 <div class="w-2 h-2 rounded-full bg-yellow-400 animate-pulse shadow-[0_0_8px_rgba(250,204,21,0.8)]"></div>
                 Internal Thought Stream
               </div>
-              <div v-if="runningJob?.sub_status?.includes('Debating')" class="px-3 py-1 bg-yellow-400/10 text-yellow-400 text-[10px] font-black rounded-full border border-yellow-400/20">
-                {{ runningJob.sub_status }}
+              <div class="flex items-center gap-2">
+                <!-- Live Elapsed Timer -->
+                <div v-if="elapsedTimeText" class="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-[10px] font-black rounded-full border border-emerald-500/20 flex items-center gap-1.5 font-mono shadow-[0_0_15px_rgba(16,185,129,0.1)]">
+                  <Clock :size="10" class="animate-spin-slow text-emerald-400" />
+                  <span>ELAPSED: {{ elapsedTimeText }}</span>
+                </div>
+                <div v-if="runningJob?.sub_status?.includes('Debating')" class="px-3 py-1 bg-yellow-400/10 text-yellow-400 text-[10px] font-black rounded-full border border-yellow-400/20">
+                  {{ runningJob.sub_status }}
+                </div>
               </div>
+            </div>
+
+            <!-- Micro Progress Bar -->
+            <div class="relative h-1 bg-white/5 rounded-full overflow-hidden mt-2 mb-4">
+              <div 
+                class="absolute inset-y-0 left-0 bg-[var(--color-accent-primary)] transition-all duration-1000 ease-in-out"
+                :style="{ width: currentPhase === 'Scraping' ? '33.33%' : (currentPhase === 'Reasoning' ? '66.66%' : (currentPhase === 'Reporting' ? '100%' : '0%')) }"
+              ></div>
+              <div v-if="currentPhase" class="absolute inset-y-0 left-0 bg-white/20 animate-pulse" :style="{ width: currentPhase === 'Scraping' ? '33.33%' : (currentPhase === 'Reasoning' ? '66.66%' : (currentPhase === 'Reporting' ? '100%' : '0%')) }"></div>
+            </div>
+
+            <!-- Labels for the Micro Progress Bar -->
+            <div class="flex justify-between text-[8px] font-black uppercase tracking-[0.2em] opacity-40 mb-2">
+              <span class="transition-all duration-500" :class="currentPhase === 'Scraping' ? 'text-[var(--color-accent-primary)] opacity-100 scale-110' : ''">Scraping</span>
+              <span class="transition-all duration-500" :class="currentPhase === 'Reasoning' ? 'text-[var(--color-accent-primary)] opacity-100 scale-110' : ''">Reasoning</span>
+              <span class="transition-all duration-500" :class="currentPhase === 'Reporting' ? 'text-[var(--color-accent-primary)] opacity-100 scale-110' : ''">Reporting</span>
             </div>
             
             <div class="font-mono text-[13px] text-white/80 leading-relaxed italic bg-black/20 p-4 rounded-lg border border-white/5">
@@ -903,37 +999,52 @@ function formatDate(dateStr: string | null): string {
             </div>
 
             <!-- Action Buttons -->
-            <div class="pt-8 border-t border-[var(--color-border-default)] flex flex-wrap gap-4">
-              <template v-if="activeTab === 'research'">
-                <button
-                  v-if="!isRunning"
-                  type="submit"
-                  :disabled="loading"
-                  class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
-                >
-                  <RefreshCw v-if="loading" :size="20" class="animate-spin" />
-                  <Play v-else :size="20" /> Start Now
-                </button>
+            <div class="pt-8 border-t border-[var(--color-border-default)] flex flex-col gap-6">
+              <!-- Force Data Refresh Toggle -->
+              <div 
+                class="flex items-center gap-3 px-4 py-3 bg-black/20 rounded-xl border border-white/5 cursor-pointer hover:bg-black/40 transition-all select-none w-fit"
+                @click="force = !force"
+              >
+                <div class="relative w-10 h-6 rounded-full transition-colors duration-300" :class="force ? 'bg-amber-500' : 'bg-white/10'">
+                  <div class="absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform duration-300 shadow-sm" :class="force ? 'translate-x-4' : ''"></div>
+                </div>
+                <div class="flex flex-col">
+                  <span class="text-[9px] font-black uppercase tracking-widest transition-colors" :class="force ? 'text-amber-400' : 'text-white/40'">Force Data Refresh</span>
+                  <span class="text-[8px] opacity-30 -mt-1 uppercase font-black">Bypass Local Data Cache</span>
+                </div>
+              </div>
 
-                <button
-                  type="button"
-                  @click="addToQueue"
-                  class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-bg-elevated)] hover:bg-opacity-80 border border-[var(--color-border-default)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98]"
-                >
-                  Add to Queue
-                </button>
-              </template>
+              <div class="flex flex-wrap items-center gap-4">
+                <template v-if="activeTab === 'research'">
+                  <button
+                    v-if="!isRunning"
+                    type="submit"
+                    :disabled="loading"
+                    class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
+                  >
+                    <RefreshCw v-if="loading" :size="20" class="animate-spin" />
+                    <Play v-else :size="20" /> Start Now
+                  </button>
 
-              <template v-else>
-                <button
-                  type="submit"
-                  :disabled="loading"
-                  class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
-                >
-                  <Clock :size="20" /> Create Pipeline
-                </button>
-              </template>
+                  <button
+                    type="button"
+                    @click="addToQueue"
+                    class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-bg-elevated)] hover:bg-opacity-80 border border-[var(--color-border-default)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+                  >
+                    Add to Queue
+                  </button>
+                </template>
 
+                <template v-else>
+                  <button
+                    type="submit"
+                    :disabled="loading"
+                    class="flex items-center justify-center gap-3 px-8 py-4 bg-[var(--color-accent-primary)] hover:bg-[var(--color-accent-hover)] text-white font-black uppercase tracking-widest rounded-xl transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 shadow-xl shadow-[var(--color-accent-primary)]/40"
+                  >
+                    <Clock :size="20" /> Create Pipeline
+                  </button>
+                </template>
+              </div>
             </div>
           </form>
         </div>
@@ -992,7 +1103,11 @@ function formatDate(dateStr: string | null): string {
                     <div class="flex gap-1">
                       <span v-for="t in job.tickers" :key="t" class="text-[11px] font-black text-white bg-blue-500/20 px-1.5 py-0.5 rounded">{{ t }}</span>
                     </div>
-                    <div class="text-[10px] text-white font-mono font-bold">{{ job.dateFrom || 'Today' }} → {{ job.dateTo || 'Today' }}</div>
+                    <div class="text-[10px] text-white font-mono font-bold">
+                      <span v-if="job.dates && job.dates.length === 1">{{ job.dates[0] }}</span>
+                      <span v-else-if="job.dates && job.dates.length === 2">{{ job.dates[0] }} → {{ job.dates[1] }}</span>
+                      <span v-else>{{ job.dateFrom || 'Today' }}<span v-if="job.dateTo && job.dateTo !== job.dateFrom"> → {{ job.dateTo }}</span></span>
+                    </div>
                   </div>
                 </div>
                 <!-- Job Actions -->
