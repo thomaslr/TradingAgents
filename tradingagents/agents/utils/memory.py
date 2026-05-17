@@ -197,15 +197,17 @@ class TradingMemoryLog:
             matched = False
             for (trade_date, ticker), upd in list(update_map.items()):
                 pending_prefix = f"[{trade_date} | {ticker} |"
-                if tag_line.startswith(pending_prefix) and tag_line.endswith("| pending]"):
+                if tag_line.startswith(pending_prefix) and (" | pending" in tag_line or tag_line.endswith("| pending]")):
                     fields = [f.strip() for f in tag_line[1:-1].split("|")]
                     rating = fields[2]
                     raw_pct = f"{upd['raw_return']:+.1%}"
                     alpha_pct = f"{upd['alpha_return']:+.1%}"
-                    new_tag = (
-                        f"[{trade_date} | {ticker} | {rating}"
-                        f" | {raw_pct} | {alpha_pct} | {upd['holding_days']}d]"
-                    )
+                    
+                    new_fields = [trade_date, ticker, rating, raw_pct, alpha_pct, f"{upd['holding_days']}d"]
+                    if len(fields) > 4:
+                        new_fields.extend(fields[4:])
+                    new_tag = "[" + " | ".join(new_fields) + "]"
+                    
                     rest = "\n".join(lines[1:])
                     new_blocks.append(
                         f"{new_tag}\n\n{rest.lstrip()}\n\nREFLECTION:\n{upd['reflection']}"
@@ -245,7 +247,7 @@ class TradingMemoryLog:
             is_resolved = (
                 tag_line.startswith("[")
                 and tag_line.endswith("]")
-                and not tag_line.endswith("| pending]")
+                and " | pending" not in tag_line
             )
             decisions.append((block, is_resolved))
 

@@ -99,15 +99,22 @@ class StatusTracker(BaseCallbackHandler):
         status_msg = ""
         inputs_dict = inputs or {}
         
-        # Match names from trading_graph setup.py
-        if any(x in node_name for x in ["Market Analyst", "Social Analyst", "News Analyst", "Fundamentals Analyst"]):
-            status_msg = node_name
-            # Sync our sequence index
-            for i, s in enumerate(self.sequence):
-                if s in node_name:
-                    self.seq_index = i
-                    break
-        elif any(x in node_name for x in ["Researcher", "Debator"]):
+        node_name_lower = node_name.lower()
+        
+        # Match names from trading_graph setup.py robustly and case-insensitively
+        if "market" in node_name_lower and "analyst" in node_name_lower:
+            status_msg = "Market Analyst"
+            self.seq_index = 0
+        elif "social" in node_name_lower and "analyst" in node_name_lower:
+            status_msg = "Social Analyst"
+            self.seq_index = 1
+        elif "news" in node_name_lower and "analyst" in node_name_lower:
+            status_msg = "News Analyst"
+            self.seq_index = 2
+        elif "fundamentals" in node_name_lower and "analyst" in node_name_lower:
+            status_msg = "Fundamentals Analyst"
+            self.seq_index = 3
+        elif "researcher" in node_name_lower or "debator" in node_name_lower:
             # Use the explicit 'count' field from InvestDebateState
             state = inputs_dict.get("investment_debate_state") or {}
             count = state.get("count") if isinstance(state, dict) else 0
@@ -115,7 +122,7 @@ class StatusTracker(BaseCallbackHandler):
             round_num = (count // 2) + 1
             status_msg = f"Debating (Round {round_num})"
             self.seq_index = 4
-        elif any(x in node_name for x in ["Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"]):
+        elif any(x in node_name_lower for x in ["aggressive", "conservative", "neutral"]):
             # Use the explicit 'count' field from RiskDebateState
             state = inputs_dict.get("risk_debate_state") or {}
             count = state.get("count") if isinstance(state, dict) else 0
@@ -123,7 +130,7 @@ class StatusTracker(BaseCallbackHandler):
             round_num = (count // 3) + 1
             status_msg = f"Finalizing Decision (Risk Round {round_num})"
             self.seq_index = 5
-        elif "Trader" in node_name:
+        elif "trader" in node_name_lower:
             status_msg = "Planning Trade"
             self.seq_index = 6
 
