@@ -93,9 +93,11 @@ class StatusTracker(BaseCallbackHandler):
     def on_chain_start(self, serialized, inputs, **kwargs):
         """Update status when a new node/chain starts."""
         metadata = kwargs.get("metadata") or {}
-        node_name = metadata.get("langgraph_node") or serialized.get("name") or ""
+        serialized_dict = serialized or {}
+        node_name = metadata.get("langgraph_node") or serialized_dict.get("name") or ""
 
         status_msg = ""
+        inputs_dict = inputs or {}
         
         # Match names from trading_graph setup.py
         if any(x in node_name for x in ["Market Analyst", "Social Analyst", "News Analyst", "Fundamentals Analyst"]):
@@ -107,14 +109,16 @@ class StatusTracker(BaseCallbackHandler):
                     break
         elif any(x in node_name for x in ["Researcher", "Debator"]):
             # Use the explicit 'count' field from InvestDebateState
-            count = inputs.get("investment_debate_state", {}).get("count") or 0
+            state = inputs_dict.get("investment_debate_state") or {}
+            count = state.get("count") if isinstance(state, dict) else 0
             # Round increases every 2 messages (Bull + Bear)
             round_num = (count // 2) + 1
             status_msg = f"Debating (Round {round_num})"
             self.seq_index = 4
         elif any(x in node_name for x in ["Aggressive Analyst", "Conservative Analyst", "Neutral Analyst"]):
             # Use the explicit 'count' field from RiskDebateState
-            count = inputs.get("risk_debate_state", {}).get("count") or 0
+            state = inputs_dict.get("risk_debate_state") or {}
+            count = state.get("count") if isinstance(state, dict) else 0
             # Round increases every 3 messages (Aggressive + Conservative + Neutral)
             round_num = (count // 3) + 1
             status_msg = f"Finalizing Decision (Risk Round {round_num})"
@@ -184,7 +188,8 @@ class StatusTracker(BaseCallbackHandler):
             self.current_node = self.sequence[self.seq_index]
             self.start_times[self.current_node] = time.perf_counter()
 
-        tool_name = serialized.get("name") or "Tool"
+        serialized_dict = serialized or {}
+        tool_name = serialized_dict.get("name") or "Tool"
         friendly_names = {
             "get_stock_data": "Fetching historical price data",
             "get_indicators": "Calculating technical indicators (RSI, MACD, etc)",

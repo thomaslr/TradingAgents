@@ -311,6 +311,7 @@ export async function fetchPerformanceData(params?: {
 // ── Metrics ─────────────────────────────────────────────
 export interface AnalysisMetrics {
   id: number
+  metrics_id?: number | null
   run_id: number
   ticker: string
   trade_date: string
@@ -332,5 +333,22 @@ export interface AnalysisMetrics {
 
 export async function fetchMetrics(limit = 100): Promise<AnalysisMetrics[]> {
   const { data } = await api.get<AnalysisMetrics[]>('/runs/metrics', { params: { limit } })
+  return data
+}
+
+export interface CacheStats {
+  total_reports: number
+  unique_tickers: number
+  estimated_tokens_saved: number
+  estimated_seconds_saved: number
+}
+
+export async function fetchCacheStats(): Promise<CacheStats> {
+  const { data } = await api.get<CacheStats>('/analysis/cache/stats')
+  return data
+}
+
+export async function clearAnalystCache(): Promise<{ status: string; deleted_files: number }> {
+  const { data } = await api.delete<{ status: string; deleted_files: number }>('/analysis/cache')
   return data
 }

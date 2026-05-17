@@ -76,6 +76,19 @@ def get_report_content(ticker: str, date: str, filename: str, sim_id: str = "leg
         key = REPORT_MAPPINGS[filename]
         content = data.get(key)
         
+        # Transparently resolve logical cache pointers if found
+        if isinstance(content, dict) and content.get("cached") and content.get("shared_path"):
+            shared_path = Path(content["shared_path"])
+            if shared_path.exists():
+                try:
+                    with open(shared_path, 'r', encoding='utf-8') as sf:
+                        shared_data = json.load(sf)
+                        content = shared_data.get("report", f"Error: report key missing in cached file {shared_path}")
+                except Exception as sf_err:
+                    content = f"Error reading cached report: {str(sf_err)}"
+            else:
+                content = f"Cached report file not found at {shared_path}."
+        
         if not content:
              content = f"No content available for {filename} in simulation {sim_id}."
              

@@ -51,6 +51,46 @@ const runningJob = ref<any>(null)
 const showDeepIntel = ref(false)
 const thoughtStreamText = ref('')
 const currentPhase = ref('') // 'Scraping' | 'Reasoning' | 'Reporting'
+const elapsedTimeText = ref('')
+let elapsedInterval: any = null
+
+function updateElapsedTime() {
+  if (!isRunning.value || !runningJob.value || !runningJob.value.started_at) {
+    elapsedTimeText.value = ''
+    return
+  }
+  
+  const rawStr = runningJob.value.started_at
+  const parsedAsLocal = new Date(rawStr).getTime()
+  
+  // Try parsing as UTC (force Z suffix if not present)
+  let utcStr = rawStr
+  if (!utcStr.endsWith('Z') && !utcStr.includes('+')) {
+    // If it contains a timezone offset like -05:00, don't append Z
+    const hasOffset = /[-+]\d{2}:?\d{2}$/.test(utcStr)
+    if (!hasOffset) {
+      utcStr += 'Z'
+    }
+  }
+  const parsedAsUtc = new Date(utcStr).getTime()
+  
+  const now = Date.now()
+  const diffLocal = isNaN(parsedAsLocal) ? Infinity : Math.abs(now - parsedAsLocal)
+  const diffUtc = isNaN(parsedAsUtc) ? Infinity : Math.abs(now - parsedAsUtc)
+  
+  // Pick the interpretation that is closer to the current time
+  const startMs = diffLocal < diffUtc ? parsedAsLocal : parsedAsUtc
+  
+  if (isNaN(startMs)) {
+    elapsedTimeText.value = ''
+    return
+  }
+  
+  const diffSec = Math.max(0, Math.floor((now - startMs) / 1000))
+  const minutes = Math.floor(diffSec / 60)
+  const seconds = diffSec % 60
+  elapsedTimeText.value = `${minutes}m ${seconds.toString().padStart(2, '0')}s`
+}
 
 const pipelineSteps = [
   'Market Analyst',
@@ -101,10 +141,19 @@ onMounted(async () => {
   checkStatus()
   // Start polling for status
   statusPolling = setInterval(checkStatus, 3000)
+  // Smooth 1s real-time timer
+  elapsedInterval = setInterval(() => {
+    if (isRunning.value && runningJob.value?.started_at) {
+      updateElapsedTime()
+    } else {
+      elapsedTimeText.value = ''
+    }
+  }, 1000)
 })
 
 onUnmounted(() => {
   if (statusPolling) clearInterval(statusPolling)
+  if (elapsedInterval) clearInterval(elapsedInterval)
 })
 
 async function checkStatus() {
@@ -134,7 +183,15 @@ async function checkStatus() {
     }
 
     if (status.running && status.job) {
+      const prevStartedAt = runningJob.value?.started_at
+      const prevTicker = runningJob.value?.current_ticker
+      const prevDate = runningJob.value?.current_date
+
       runningJob.value = status.job
+
+      if (status.job.started_at !== prevStartedAt || status.job.current_ticker !== prevTicker || status.job.current_date !== prevDate) {
+        updateElapsedTime()
+      }
       isProcessingQueue.value = false // We've confirmed it's running
       activeConfig.value = status.job.config
       activeJobMessage.value = status.job.status_message
@@ -742,8 +799,15 @@ function formatDate(dateStr: string | null): string {
                 <div class="w-2 h-2 rounded-full bg-yellow-400 animate-pulse shadow-[0_0_8px_rgba(250,204,21,0.8)]"></div>
                 Internal Thought Stream
               </div>
-              <div v-if="runningJob?.sub_status?.includes('Debating')" class="px-3 py-1 bg-yellow-400/10 text-yellow-400 text-[10px] font-black rounded-full border border-yellow-400/20">
-                {{ runningJob.sub_status }}
+              <div class="flex items-center gap-2">
+                <!-- Live Elapsed Timer -->
+                <div v-if="elapsedTimeText" class="px-3 py-1 bg-emerald-500/10 text-emerald-400 text-[10px] font-black rounded-full border border-emerald-500/20 flex items-center gap-1.5 font-mono shadow-[0_0_15px_rgba(16,185,129,0.1)]">
+                  <Clock :size="10" class="animate-spin-slow text-emerald-400" />
+                  <span>ELAPSED: {{ elapsedTimeText }}</span>
+                </div>
+                <div v-if="runningJob?.sub_status?.includes('Debating')" class="px-3 py-1 bg-yellow-400/10 text-yellow-400 text-[10px] font-black rounded-full border border-yellow-400/20">
+                  {{ runningJob.sub_status }}
+                </div>
               </div>
             </div>
 
