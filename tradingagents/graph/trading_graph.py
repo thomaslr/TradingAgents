@@ -236,13 +236,21 @@ class TradingAgentsGraph:
         try:
             registry = RunRegistry(self.config["db_path"])
             for upd in updates:
+                # Use metadata from the update if present (from resolved pending entry), fallback to current config
+                qm = upd.get("quick_model") or self.config.get("quick_think_llm", "unknown")
+                dm = upd.get("deep_model") or self.config.get("deep_think_llm", "unknown")
+                try:
+                    d_val = int(upd.get("depth")) if upd.get("depth") is not None else int(self.config.get("max_debate_rounds", 1))
+                except (ValueError, TypeError):
+                    d_val = int(self.config.get("max_debate_rounds", 1))
+
                 registry.mark_outcome_by_key(
                     ticker=upd["ticker"],
                     trade_date=upd["trade_date"],
                     provider=self.config.get("llm_provider", "unknown"),
-                    quick_model=self.config.get("quick_think_llm", "unknown"),
-                    deep_model=self.config.get("deep_think_llm", "unknown"),
-                    depth=self.config.get("max_debate_rounds", 1),
+                    quick_model=qm,
+                    deep_model=dm,
+                    depth=d_val,
                     raw_return=upd["raw_return"],
                     alpha_return=upd["alpha_return"],
                     holding_days=upd["holding_days"],
@@ -283,6 +291,11 @@ class TradingAgentsGraph:
                 "alpha_return": alpha,
                 "holding_days": days,
                 "reflection": reflection,
+                # Propagate config metadata to differentiate matching blocks in batch_update
+                "quick_model": entry.get("quick_model", "unknown"),
+                "deep_model": entry.get("deep_model", "unknown"),
+                "depth": entry.get("depth", "1"),
+                "runtime_sec": entry.get("runtime_sec", "0.0"),
             })
 
         if updates:
