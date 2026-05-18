@@ -13,6 +13,15 @@ let chart: IChartApi | null = null
 let candleSeries: ISeriesApi<'Candlestick'> | null = null
 let volumeSeries: ISeriesApi<'Histogram'> | null = null
 
+function safeConfigColor(c: SimulationConfig): string {
+  const color = c.color || '#10b981'
+  const lower = color.toLowerCase().trim()
+  if (lower === '#ffffff' || lower === '#fff' || lower === 'white' || lower === 'rgb(255,255,255)' || lower === 'rgba(255,255,255,1)') {
+    return '#10b981'
+  }
+  return color
+}
+
 const loading = ref(true)
 const error = ref('')
 const period = ref(localStorage.getItem('chart_period') || '3mo')
@@ -23,9 +32,9 @@ const availableTickers = ref<any[]>([])
 const runs = ref<Run[]>([])
 const configs = ref<SimulationConfig[]>([])
 const enabledConfigs = ref<Set<string>>(new Set())
-const showBuy = ref(localStorage.getItem('chart_show_buy') !== 'false')
-const showSell = ref(localStorage.getItem('chart_show_sell') !== 'false')
-const showHold = ref(localStorage.getItem('chart_show_hold') === 'true')
+const showBuy = ref(true)
+const showSell = ref(true)
+const showHold = ref(false)
 
 watch(period, (v) => localStorage.setItem('chart_period', v))
 watch(dateFrom, (v) => localStorage.setItem('chart_from', v))
@@ -55,7 +64,7 @@ onMounted(async () => {
 async function loadConfigs() {
   try {
     configs.value = await fetchConfigs()
-    enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
+    enabledConfigs.value = new Set()
   } catch (e) {
     console.error('Failed to load configs', e)
   }
@@ -206,33 +215,45 @@ async function loadChart() {
       
       const markers = runs.value
         .filter(r => r.rating)
-        // Filter by user toggles
-        .filter(r => {
-          const rating = r.rating?.toLowerCase() || ''
+        // Match each run to its simulation configuration
+        .map(r => {
+          const matchedConfig = configs.value.find(c => 
+            c.provider === r.provider &&
+            c.quick_model === r.quick_model &&
+            c.deep_model === r.deep_model &&
+            c.depth === r.depth
+          )
+          return { run: r, config: matchedConfig }
+        })
+        // Filter by enabledConfigs: only show signals from active model configurations
+        .filter(({ config }) => config && enabledConfigs.value.has(config.config_id))
+        // Filter by user toggles (Buy, Sell, Hold)
+        .filter(({ run }) => {
+          const rating = run.rating?.toLowerCase() || ''
           if (rating.includes('buy') || rating.includes('overweight')) return showBuy.value
           if (rating.includes('sell') || rating.includes('underweight')) return showSell.value
           if (rating.includes('hold')) return showHold.value
           return true
         })
         // Ensure the trade_date actually exists in the chart data!
-        .filter(r => validTimes.has(r.trade_date))
-        .map(r => ({
-          time: r.trade_date,
-          position: (r.rating === 'Buy' || r.rating === 'Overweight') ? 'belowBar' as const : 'aboveBar' as const,
-          color: (r.rating === 'Buy' || r.rating === 'Overweight') ? '#22c55e'
-               : (r.rating === 'Sell' || r.rating === 'Underweight') ? '#ef4444'
-               : '#f59e0b',
-          shape: (r.rating === 'Buy' || r.rating === 'Overweight') ? 'arrowUp' as const
-               : (r.rating === 'Sell' || r.rating === 'Underweight') ? 'arrowDown' as const
-               : 'circle' as const,
-          text: r.rating || '',
-        }))
+        .filter(({ run }) => validTimes.has(run.trade_date))
+        .map(({ run, config }) => {
+          const rating = run.rating || ''
+          const isBuy = rating === 'Buy' || rating === 'Overweight'
+          const isSell = rating === 'Sell' || rating === 'Underweight'
+          
+          return {
+            time: run.trade_date,
+            position: isBuy ? 'belowBar' as const : isSell ? 'aboveBar' as const : 'inBar' as const,
+            color: safeConfigColor(config!),
+            shape: isBuy ? 'arrowUp' as const : isSell ? 'arrowDown' as const : 'circle' as const,
+            text: rating,
+          }
+        })
         .sort((a, b) => a.time.localeCompare(b.time))
 
-
-      if (markers.length > 0) {
-        createSeriesMarkers(candleSeries, markers as any)
-      }
+      // Update series markers (clear previous markers if empty)
+      createSeriesMarkers(candleSeries, markers as any)
     }
 
     chart.timeScale().fitContent()
@@ -384,7 +405,7 @@ watch([dateFrom, dateTo], ([f, t]) => {
           class="flex items-center gap-2 transition-opacity"
           :class="enabledConfigs.has(c.config_id) ? 'opacity-100' : 'opacity-40'"
         >
-          <span class="w-3 h-3 rounded-full" :style="{ backgroundColor: c.color }"></span>
+          <span class="w-3 h-3 rounded-full" :style="{ backgroundColor: safeConfigColor(c) }"></span>
           <span :class="enabledConfigs.has(c.config_id) ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'">{{ c.label }}</span>
         </button>
       </template>
