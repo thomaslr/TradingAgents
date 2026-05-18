@@ -1,11 +1,24 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { fetchMetrics, fetchCacheStats, clearAnalystCache, type AnalysisMetrics, type CacheStats } from '../api/client'
-import { Beaker, Zap, Cpu, BarChart3, RefreshCw, Layers } from 'lucide-vue-next'
+import { Beaker, Zap, Cpu, BarChart3, RefreshCw, Layers, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-vue-next'
 
 const metrics = ref<AnalysisMetrics[]>([])
 const loading = ref(true)
-const selectedModel = ref('ALL')
+const selectedQuickModel = ref('ALL')
+const selectedDeepModel = ref('ALL')
+
+const sortKey = ref<string>('created_at')
+const sortOrder = ref<'asc' | 'desc'>('desc')
+
+function toggleSort(key: string) {
+  if (sortKey.value === key) {
+    sortOrder.value = sortOrder.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortKey.value = key
+    sortOrder.value = 'desc'
+  }
+}
 
 const cacheStats = ref<CacheStats>({
   total_reports: 0,
@@ -72,15 +85,54 @@ const totalTokens = computed(() => {
 })
 
 const filteredMetrics = computed(() => {
-  if (selectedModel.value === 'ALL') return metrics.value
-  return metrics.value.filter(m => m.quick_model === selectedModel.value || m.deep_model === selectedModel.value)
+  let result = metrics.value
+
+  // Apply Quick Model Filter
+  if (selectedQuickModel.value !== 'ALL') {
+    result = result.filter(m => m.quick_model === selectedQuickModel.value)
+  }
+
+  // Apply Deep Model Filter
+  if (selectedDeepModel.value !== 'ALL') {
+    result = result.filter(m => m.deep_model === selectedDeepModel.value)
+  }
+
+  // Apply Sorting
+  if (sortKey.value) {
+    result = [...result].sort((a, b) => {
+      let aVal = (a as any)[sortKey.value]
+      let bVal = (b as any)[sortKey.value]
+
+      if (aVal === null || aVal === undefined) return sortOrder.value === 'asc' ? 1 : -1
+      if (bVal === null || bVal === undefined) return sortOrder.value === 'asc' ? -1 : 1
+
+      if (typeof aVal === 'string') {
+        return sortOrder.value === 'asc'
+          ? aVal.localeCompare(bVal)
+          : bVal.localeCompare(aVal)
+      } else {
+        return sortOrder.value === 'asc'
+          ? (aVal > bVal ? 1 : -1)
+          : (bVal > aVal ? 1 : -1)
+      }
+    })
+  }
+
+  return result
 })
 
-const uniqueModels = computed(() => {
+const uniqueQuickModels = computed(() => {
   const models = new Set<string>()
   metrics.value.forEach(m => {
-    models.add(m.quick_model)
-    models.add(m.deep_model)
+    if (m.quick_model) models.add(m.quick_model)
+  })
+  return Array.from(models).sort()
+})
+
+const uniqueDeepModels = computed(() => {
+  const models = new Set<string>()
+  metrics.value.forEach(m => {
+    if (m.deep_model) models.add(m.deep_model)
   })
   return Array.from(models).sort()
 })
@@ -194,12 +246,24 @@ function formatRunDate(dateStr: string | null): string {
     </div>
 
     <!-- Filters -->
-    <div class="flex items-center gap-4 mb-8">
-      <div class="flex items-center gap-3 px-4 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-xl">
-        <Layers :size="16" class="opacity-40" />
-        <select v-model="selectedModel" class="bg-transparent border-none text-xs font-black uppercase tracking-widest focus:outline-none cursor-pointer">
-          <option value="ALL" class="bg-[#1a1f2e] text-white">All Models</option>
-          <option v-for="m in uniqueModels" :key="m" :value="m" class="bg-[#1a1f2e] text-white">{{ m }}</option>
+    <div class="flex flex-wrap items-center gap-4 mb-8">
+      <!-- Quick Model Filter -->
+      <div class="flex items-center gap-3 px-4 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-xl shadow-md hover:border-white/20 transition-colors">
+        <Layers :size="16" class="opacity-40 text-[var(--color-accent-primary)]" />
+        <span class="text-[9px] font-black uppercase tracking-widest text-[var(--color-text-muted)] border-r border-white/10 pr-2">Quick</span>
+        <select v-model="selectedQuickModel" class="bg-transparent border-none text-xs font-black uppercase tracking-widest focus:outline-none cursor-pointer">
+          <option value="ALL" class="bg-[#1a1f2e] text-white">All Quick Models</option>
+          <option v-for="m in uniqueQuickModels" :key="m" :value="m" class="bg-[#1a1f2e] text-white">{{ m }}</option>
+        </select>
+      </div>
+
+      <!-- Deep Model Filter -->
+      <div class="flex items-center gap-3 px-4 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-xl shadow-md hover:border-white/20 transition-colors">
+        <Layers :size="16" class="opacity-40 text-blue-400" />
+        <span class="text-[9px] font-black uppercase tracking-widest text-[var(--color-text-muted)] border-r border-white/10 pr-2">Deep</span>
+        <select v-model="selectedDeepModel" class="bg-transparent border-none text-xs font-black uppercase tracking-widest focus:outline-none cursor-pointer">
+          <option value="ALL" class="bg-[#1a1f2e] text-white">All Deep Models</option>
+          <option v-for="m in uniqueDeepModels" :key="m" :value="m" class="bg-[#1a1f2e] text-white">{{ m }}</option>
         </select>
       </div>
     </div>
@@ -209,13 +273,55 @@ function formatRunDate(dateStr: string | null): string {
       <div class="overflow-x-auto">
         <table class="w-full text-sm text-left border-collapse">
           <thead>
-            <tr class="bg-[var(--color-bg-elevated)]/50 border-b border-[var(--color-border-default)] text-[10px] font-black uppercase tracking-[0.2em] text-[var(--color-text-muted)]">
-              <th class="px-8 py-5">Target</th>
-              <th class="px-8 py-5">Configurations</th>
-              <th class="px-8 py-5">Processing Latency (Analysts)</th>
-              <th class="px-8 py-5">Reasoning (Debate)</th>
-              <th class="px-8 py-5">Throughput</th>
-              <th class="px-8 py-5 text-right">Total Time</th>
+            <tr class="bg-[var(--color-bg-elevated)]/50 border-b border-[var(--color-border-default)] text-[10px] font-black uppercase tracking-[0.15em] text-[var(--color-text-muted)]">
+              <th @click="toggleSort('ticker')" class="px-8 py-5 cursor-pointer select-none hover:text-white transition-colors group">
+                <div class="flex items-center gap-1.5">
+                  Target
+                  <ArrowUpDown v-if="sortKey !== 'ticker'" :size="10" class="opacity-0 group-hover:opacity-40 transition-opacity" />
+                  <ArrowUp v-else-if="sortOrder === 'asc'" :size="10" class="text-[var(--color-accent-primary)]" />
+                  <ArrowDown v-else :size="10" class="text-[var(--color-accent-primary)]" />
+                </div>
+              </th>
+              <th @click="toggleSort('depth')" class="px-8 py-5 cursor-pointer select-none hover:text-white transition-colors group">
+                <div class="flex items-center gap-1.5">
+                  Configurations (Depth)
+                  <ArrowUpDown v-if="sortKey !== 'depth'" :size="10" class="opacity-0 group-hover:opacity-40 transition-opacity" />
+                  <ArrowUp v-else-if="sortOrder === 'asc'" :size="10" class="text-amber-500" />
+                  <ArrowDown v-else :size="10" class="text-amber-500" />
+                </div>
+              </th>
+              <th @click="toggleSort('market_sec')" class="px-8 py-5 cursor-pointer select-none hover:text-white transition-colors group">
+                <div class="flex items-center gap-1.5">
+                  Processing Latency (Analysts)
+                  <ArrowUpDown v-if="sortKey !== 'market_sec'" :size="10" class="opacity-0 group-hover:opacity-40 transition-opacity" />
+                  <ArrowUp v-else-if="sortOrder === 'asc'" :size="10" class="text-[var(--color-accent-primary)]" />
+                  <ArrowDown v-else :size="10" class="text-[var(--color-accent-primary)]" />
+                </div>
+              </th>
+              <th @click="toggleSort('debate_sec')" class="px-8 py-5 cursor-pointer select-none hover:text-white transition-colors group">
+                <div class="flex items-center gap-1.5">
+                  Reasoning (Debate)
+                  <ArrowUpDown v-if="sortKey !== 'debate_sec'" :size="10" class="opacity-0 group-hover:opacity-40 transition-opacity" />
+                  <ArrowUp v-else-if="sortOrder === 'asc'" :size="10" class="text-amber-500" />
+                  <ArrowDown v-else :size="10" class="text-amber-500" />
+                </div>
+              </th>
+              <th @click="toggleSort('avg_tps')" class="px-8 py-5 cursor-pointer select-none hover:text-white transition-colors group">
+                <div class="flex items-center gap-1.5">
+                  Throughput
+                  <ArrowUpDown v-if="sortKey !== 'avg_tps'" :size="10" class="opacity-0 group-hover:opacity-40 transition-opacity" />
+                  <ArrowUp v-else-if="sortOrder === 'asc'" :size="10" class="text-white" />
+                  <ArrowDown v-else :size="10" class="text-white" />
+                </div>
+              </th>
+              <th @click="toggleSort('total_sec')" class="px-8 py-5 text-right cursor-pointer select-none hover:text-white transition-colors group">
+                <div class="flex items-center justify-end gap-1.5">
+                  Total Time
+                  <ArrowUpDown v-if="sortKey !== 'total_sec'" :size="10" class="opacity-0 group-hover:opacity-40 transition-opacity" />
+                  <ArrowUp v-else-if="sortOrder === 'asc'" :size="10" class="text-[var(--color-accent-primary)]" />
+                  <ArrowDown v-else :size="10" class="text-[var(--color-accent-primary)]" />
+                </div>
+              </th>
             </tr>
           </thead>
           <tbody class="divide-y divide-[var(--color-border-default)]">

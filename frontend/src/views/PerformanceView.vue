@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
 import { fetchPerformanceData, fetchConfigs, clearMemoryEntries, fetchTickers, type PerformanceEntry, type SimulationConfig, type MemoryEntry } from '../api/client'
-import { createChart, ColorType, LineSeries } from 'lightweight-charts'
+import { createChart, ColorType, LineSeries, LineStyle } from 'lightweight-charts'
 import { Trophy, RefreshCw, Info, Filter, BarChart3, Trash2 } from 'lucide-vue-next'
 
 const loading = ref(true)
@@ -13,6 +13,15 @@ let chart: any = null
 let benchmarkSeries: any = null
 let strategySeriesMap = new Map<string, any>()
 const registryTickers = ref<{ticker: string, name: string}[]>([])
+
+function safeConfigColor(c: SimulationConfig): string {
+  const color = c.color || '#10b981'
+  const lower = color.toLowerCase().trim()
+  if (lower === '#ffffff' || lower === '#fff' || lower === 'white' || lower === 'rgb(255,255,255)' || lower === 'rgba(255,255,255,1)') {
+    return '#10b981'
+  }
+  return color
+}
 
 // Adapt DB entries to the MemoryEntry shape
 const entries = computed<MemoryEntry[]>(() => {
@@ -376,9 +385,9 @@ function initChart() {
 
   // Benchmark is always added once
   benchmarkSeries = chart.addSeries(LineSeries, {
-    color: '#6366f1',
+    color: '#ffffff',
     lineWidth: 2,
-    lineStyle: 2, 
+    lineStyle: LineStyle.Dashed, 
     title: 'Benchmark',
   })
 
@@ -432,7 +441,7 @@ function updateChart() {
     if (!config) return
 
     const series = chart.addSeries(LineSeries, {
-      color: config.color,
+      color: safeConfigColor(config),
       lineWidth: 3,
       title: config.label,
     })
@@ -642,7 +651,7 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
                 ? 'border-white/20 bg-white/10 text-white'
                 : 'border-white/5 bg-white/[0.02] text-[var(--color-text-muted)] opacity-40'"
             >
-              <span class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: c.color }"></span>
+              <span class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: safeConfigColor(c) }"></span>
               {{ c.label }}
             </button>
           </div>
@@ -651,7 +660,7 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
     <div class="space-y-4">
       <div v-for="s in multiConfigStats" :key="s.config.config_id" 
            class="glass p-4 rounded-2xl border border-[var(--color-border-default)] transition-all hover:border-white/20"
-           :style="{ borderLeft: `4px solid ${s.config.color}` }">
+           :style="{ borderLeft: `4px solid ${safeConfigColor(s.config)}` }">
         <div class="flex flex-wrap items-center justify-between gap-4">
           <!-- Config Header -->
           <div class="flex flex-col min-w-[200px]">
@@ -752,12 +761,12 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
           <!-- Dynamic Strategy Legends -->
           <div v-for="c in activeConfigs" 
                :key="c.config_id" class="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded-md border border-white/5">
-            <div class="w-2 h-2 rounded-full" :style="{ backgroundColor: c.color }"></div>
+            <div class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: safeConfigColor(c) }"></div>
             <span class="text-[var(--color-text-secondary)]">{{ c.label }}</span>
           </div>
           <!-- Benchmark Legend -->
           <div class="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded-md border border-white/5">
-            <div class="w-2 h-2 rounded-full bg-[#6366f1] border border-dashed border-white/20"></div>
+            <div class="w-2.5 h-2.5 rounded-full bg-white border border-dashed border-white/40"></div>
             <span class="text-[var(--color-text-secondary)]">Benchmark ({{ benchmarkType === 'SPY' ? 'S&P 500' : 'Hold' }})</span>
           </div>
         </div>
