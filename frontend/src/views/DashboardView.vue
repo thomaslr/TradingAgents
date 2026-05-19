@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchRuns, deleteRuns, deleteRun, type Run } from '../api/client'
-import { TrendingUp, TrendingDown, Minus, Clock, CheckCircle, XCircle, Eye, Trash2, RefreshCw, Search, ArrowDown, ArrowUp } from 'lucide-vue-next'
+import { fetchRuns, deleteRuns, deleteRun, fetchConfigs, type Run, type SimulationConfig } from '../api/client'
+import { TrendingUp, TrendingDown, Minus, Clock, CheckCircle, XCircle, Eye, Trash2, RefreshCw, Search, ArrowDown, ArrowUp, Filter } from 'lucide-vue-next'
 
 const router = useRouter()
 const runs = ref<Run[]>([])
@@ -17,30 +17,84 @@ const sortColumn = ref<keyof Run | 'completed_at'>((localStorage.getItem('dash_s
 const sortDirection = ref<'asc' | 'desc'>((localStorage.getItem('dash_sort_dir') as any) || 'desc')
 const selectedRuns = ref<Set<number>>(new Set())
 
-const selectedQuickModel = ref(localStorage.getItem('dash_quick') || 'ALL')
-const selectedDeepModel = ref(localStorage.getItem('dash_deep') || 'ALL')
-const selectedDepth = ref(localStorage.getItem('dash_depth') || 'ALL')
+// Unified simulation configs selection state
+const configs = ref<SimulationConfig[]>([])
+const enabledConfigs = ref<Set<string>>(new Set())
+const configsSearchQuery = ref('')
+
+function safeConfigColor(c: SimulationConfig): string {
+  const color = c.color || '#10b981'
+  const lower = color.toLowerCase().trim()
+  if (lower === '#ffffff' || lower === '#fff' || lower === 'white' || lower === 'rgb(255,255,255)' || lower === 'rgba(255,255,255,1)') {
+    return '#10b981'
+  }
+  return color
+}
+
+const filteredConfigs = computed(() => {
+  if (!configsSearchQuery.value) return configs.value
+  const q = configsSearchQuery.value.toLowerCase()
+  return configs.value.filter(c => c.label.toLowerCase().includes(q))
+})
+
+function loadSharedConfigs() {
+  try {
+    const saved = localStorage.getItem('shared_enabled_configs')
+    if (saved) {
+      const parsed = JSON.parse(saved)
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        enabledConfigs.value = new Set(parsed)
+        return
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse shared configs', e)
+  }
+  // Default: enable all configs if nothing is saved or if it is empty
+  enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
+}
+
+function toggleConfig(configId: string) {
+  const s = new Set(enabledConfigs.value)
+  if (s.has(configId)) {
+    s.delete(configId)
+  } else {
+    s.add(configId)
+  }
+  enabledConfigs.value = s
+  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(s)))
+}
+
+function selectAllConfigs() {
+  enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
+  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(enabledConfigs.value)))
+}
+
+function clearAllConfigs() {
+  enabledConfigs.value = new Set()
+  localStorage.setItem('shared_enabled_configs', JSON.stringify([]))
+}
+
+function handleStorageEvent(event: StorageEvent) {
+  if (event.key === 'shared_enabled_configs') {
+    loadSharedConfigs()
+  }
+}
+
+async function loadConfigs() {
+  try {
+    configs.value = await fetchConfigs()
+    loadSharedConfigs()
+  } catch (e) {
+    console.error('Failed to load configs', e)
+  }
+}
 
 watch(searchQuery, (v) => localStorage.setItem('dash_search', v))
 watch(startDate, (v) => localStorage.setItem('dash_start', v))
 watch(endDate, (v) => localStorage.setItem('dash_end', v))
 watch(sortColumn, (v) => localStorage.setItem('dash_sort_col', v))
 watch(sortDirection, (v) => localStorage.setItem('dash_sort_dir', v))
-watch(selectedQuickModel, (v) => localStorage.setItem('dash_quick', v))
-watch(selectedDeepModel, (v) => localStorage.setItem('dash_deep', v))
-watch(selectedDepth, (v) => localStorage.setItem('dash_depth', v))
-
-const uniqueQuickModels = computed(() => {
-  return [...new Set(runs.value.map(r => r.quick_model).filter(Boolean))].sort()
-})
-
-const uniqueDeepModels = computed(() => {
-  return [...new Set(runs.value.map(r => r.deep_model).filter(Boolean))].sort()
-})
-
-const uniqueDepths = computed(() => {
-  return [...new Set(runs.value.map(r => r.depth).filter(d => d !== null && d !== undefined))].sort((a, b) => Number(a) - Number(b))
-})
 
 function padDate(val: string): string {
   if (!val) return val
@@ -60,7 +114,8 @@ function padDate(val: string): string {
 let refreshInterval: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
-  await loadRuns()
+  await Promise.all([loadRuns(), loadConfigs()])
+  window.addEventListener('storage', handleStorageEvent)
   refreshInterval = setInterval(() => {
     if (runs.value.some(r => r.status === 'running' || r.status === 'pending')) {
       loadRuns(true)
@@ -70,6 +125,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (refreshInterval) clearInterval(refreshInterval)
+  window.removeEventListener('storage', handleStorageEvent)
 })
 
 async function loadRuns(silent = false) {
@@ -122,15 +178,19 @@ const processedRuns = computed(() => {
     result = result.filter(r => r.trade_date <= endDate.value)
   }
 
-  // Model & Depth filters
-  if (selectedQuickModel.value !== 'ALL') {
-    result = result.filter(r => r.quick_model === selectedQuickModel.value)
-  }
-  if (selectedDeepModel.value !== 'ALL') {
-    result = result.filter(r => r.deep_model === selectedDeepModel.value)
-  }
-  if (selectedDepth.value !== 'ALL') {
-    result = result.filter(r => r.depth !== undefined && r.depth !== null && String(r.depth) === String(selectedDepth.value))
+  // Model & Depth filters (Filtered by enabledConfigs selection)
+  if (configs.value.length > 0 && enabledConfigs.value.size > 0 && enabledConfigs.value.size < configs.value.length) {
+    result = result.filter(r => {
+      const matched = configs.value.find(c => 
+        c.provider === r.provider &&
+        c.quick_model === r.quick_model &&
+        c.deep_model === r.deep_model &&
+        c.depth === r.depth
+      )
+      return matched && enabledConfigs.value.has(matched.config_id)
+    })
+  } else if (enabledConfigs.value.size === 0) {
+    result = []
   }
 
   // Sort
@@ -370,33 +430,62 @@ function formatDate(dateStr: string | null): string {
       </div>
     </div>
 
-    <!-- Model & Depth Select Filters -->
-    <div class="flex flex-wrap items-center gap-3 mb-4">
-      <!-- Quick Model Filter -->
-      <div class="flex items-center gap-2.5 px-3 py-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg shadow-sm hover:border-white/10 transition-colors">
-        <span class="text-[9px] font-black uppercase tracking-widest text-[var(--color-text-muted)] border-r border-[var(--color-border-default)] pr-2">Quick</span>
-        <select v-model="selectedQuickModel" class="bg-transparent border-none text-xs font-bold focus:outline-none cursor-pointer p-0 text-[var(--color-text-primary)]">
-          <option value="ALL" class="bg-[#0f172a] text-white">All Quick Models</option>
-          <option v-for="m in uniqueQuickModels" :key="m" :value="m" class="bg-[#0f172a] text-white">{{ m }}</option>
-        </select>
+    <!-- Simulation Configs Filter Panel -->
+    <div v-if="configs.length > 0" class="bg-white/5 p-4 rounded-xl border border-white/10 mb-6 flex flex-col gap-3 shadow-lg">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-white/5 pb-3">
+        <div class="flex items-center gap-2">
+          <Filter :size="14" class="text-[var(--color-accent-primary)] opacity-80" />
+          <span class="text-xs uppercase font-black tracking-widest text-white">Isolate Simulation Configs</span>
+          <span class="text-[10px] text-[var(--color-text-muted)] font-mono">({{ enabledConfigs.size }} / {{ configs.length }} active)</span>
+        </div>
+        
+        <!-- Controls & Search Bar -->
+        <div class="flex flex-wrap items-center gap-2">
+          <!-- Small Autocomplete/Search input -->
+          <div class="relative w-44">
+            <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40" :size="12" />
+            <input 
+              v-model="configsSearchQuery"
+              type="text" 
+              placeholder="Search configs..." 
+              class="w-full pl-7 pr-2.5 py-1 bg-white/5 border border-white/10 rounded-lg text-[10px] focus:outline-none focus:border-[var(--color-accent-primary)] text-white font-medium bg-[#0f172a]"
+            />
+          </div>
+          
+          <button 
+            @click="selectAllConfigs" 
+            class="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-[9px] font-black uppercase tracking-wider text-white transition-colors"
+          >
+            Select All
+          </button>
+          <button 
+            @click="clearAllConfigs" 
+            class="px-2.5 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-[9px] font-black uppercase tracking-wider text-red-400 transition-colors"
+          >
+            Clear All
+          </button>
+        </div>
       </div>
 
-      <!-- Deep Model Filter -->
-      <div class="flex items-center gap-2.5 px-3 py-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg shadow-sm hover:border-white/10 transition-colors">
-        <span class="text-[9px] font-black uppercase tracking-widest text-[var(--color-text-muted)] border-r border-[var(--color-border-default)] pr-2">Deep</span>
-        <select v-model="selectedDeepModel" class="bg-transparent border-none text-xs font-bold focus:outline-none cursor-pointer p-0 text-[var(--color-text-primary)]">
-          <option value="ALL" class="bg-[#0f172a] text-white">All Deep Models</option>
-          <option v-for="m in uniqueDeepModels" :key="m" :value="m" class="bg-[#0f172a] text-white">{{ m }}</option>
-        </select>
-      </div>
-
-      <!-- Depth Filter -->
-      <div class="flex items-center gap-2.5 px-3 py-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg shadow-sm hover:border-white/10 transition-colors">
-        <span class="text-[9px] font-black uppercase tracking-widest text-[var(--color-text-muted)] border-r border-[var(--color-border-default)] pr-2">Depth</span>
-        <select v-model="selectedDepth" class="bg-transparent border-none text-xs font-bold focus:outline-none cursor-pointer p-0 text-[var(--color-text-primary)]">
-          <option value="ALL" class="bg-[#0f172a] text-white">All Depths</option>
-          <option v-for="d in uniqueDepths" :key="d" :value="d" class="bg-[#0f172a] text-white">{{ d }} Rounds</option>
-        </select>
+      <!-- Config Buttons list: capped height with premium scrolling -->
+      <div class="max-h-24 overflow-y-auto pr-1 custom-scrollbar">
+        <div class="flex flex-wrap gap-2 py-0.5">
+          <button
+            v-for="c in filteredConfigs"
+            :key="c.config_id"
+            @click="toggleConfig(c.config_id)"
+            class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all select-none"
+            :class="enabledConfigs.has(c.config_id)
+              ? 'border-white/20 bg-white/10 text-white shadow-sm'
+              : 'border-white/5 bg-white/[0.02] text-[var(--color-text-muted)] opacity-40'"
+          >
+            <div class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: safeConfigColor(c) }"></div>
+            <span>{{ c.label }}</span>
+          </button>
+          <div v-if="filteredConfigs.length === 0" class="text-[10px] text-[var(--color-text-muted)] italic py-2 pl-1">
+            No configurations match your search criteria.
+          </div>
+        </div>
       </div>
     </div>
 

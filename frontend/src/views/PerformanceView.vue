@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { fetchPerformanceData, fetchConfigs, clearMemoryEntries, fetchTickers, type PerformanceEntry, type SimulationConfig, type MemoryEntry } from '../api/client'
 import { createChart, ColorType, LineSeries, LineStyle } from 'lightweight-charts'
-import { Trophy, RefreshCw, Info, Filter, BarChart3, Trash2 } from 'lucide-vue-next'
+import { Trophy, RefreshCw, Info, Filter, BarChart3, Trash2, Search } from 'lucide-vue-next'
 
 const loading = ref(true)
 const rawDbEntries = ref<PerformanceEntry[]>([])
 const configs = ref<SimulationConfig[]>([])
 const enabledConfigs = ref<Set<string>>(new Set())
+const configsSearchQuery = ref('')
 const chartContainer = ref<HTMLDivElement>()
 let chart: any = null
 let benchmarkSeries: any = null
@@ -74,13 +75,59 @@ const expandedRows = ref<Set<string>>(new Set())
 
 
 
+const filteredConfigs = computed(() => {
+  if (!configsSearchQuery.value) return configs.value
+  const q = configsSearchQuery.value.toLowerCase()
+  return configs.value.filter(c => c.label.toLowerCase().includes(q))
+})
+
+function loadSharedConfigs() {
+  try {
+    const saved = localStorage.getItem('shared_enabled_configs')
+    if (saved) {
+      const parsed = JSON.parse(saved)
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        enabledConfigs.value = new Set(parsed)
+        return
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse shared configs', e)
+  }
+  enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
+}
+
+function selectAllConfigs() {
+  enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
+  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(enabledConfigs.value)))
+  if (chart) initChart()
+}
+
+function clearAllConfigs() {
+  enabledConfigs.value = new Set()
+  localStorage.setItem('shared_enabled_configs', JSON.stringify([]))
+  if (chart) initChart()
+}
+
+function handleStorageEvent(event: StorageEvent) {
+  if (event.key === 'shared_enabled_configs') {
+    loadSharedConfigs()
+    if (chart) initChart()
+  }
+}
+
 onMounted(async () => {
   await Promise.all([
     loadData(),
     loadRegistryTickers(),
     loadConfigs()
   ])
+  window.addEventListener('storage', handleStorageEvent)
   initChart()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('storage', handleStorageEvent)
 })
 
 async function loadRegistryTickers() {
@@ -94,8 +141,7 @@ async function loadRegistryTickers() {
 async function loadConfigs() {
   try {
     configs.value = await fetchConfigs()
-    // Enable all configs by default
-    enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
+    loadSharedConfigs()
   } catch (e) {
     console.error('Failed to load configs', e)
   }
@@ -106,6 +152,8 @@ function toggleConfig(configId: string) {
   if (s.has(configId)) s.delete(configId)
   else s.add(configId)
   enabledConfigs.value = s
+  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(s)))
+  if (chart) initChart()
 }
 
 async function loadData() {
@@ -641,23 +689,61 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
       </div>
     </div>
 
-      <!-- Simulation Config Toggle Bar -->
-      <div v-if="configs.length > 0" class="flex flex-wrap gap-4 items-center bg-white/5 p-4 rounded-xl border border-white/10 mt-4">
-        <div class="flex flex-col gap-1">
-          <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)] ml-1">Simulation Configs</span>
-          <div class="flex flex-wrap gap-2">
+      <!-- Simulation Configs Filter Panel -->
+      <div v-if="configs.length > 0" class="bg-white/5 p-4 rounded-xl border border-white/10 mt-4 flex flex-col gap-3 shadow-lg">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-white/5 pb-3">
+          <div class="flex items-center gap-2">
+            <Filter :size="14" class="text-[var(--color-accent-primary)] opacity-80" />
+            <span class="text-xs uppercase font-black tracking-widest text-white">Isolate Simulation Configs</span>
+            <span class="text-[10px] text-[var(--color-text-muted)] font-mono">({{ enabledConfigs.size }} / {{ configs.length }} active)</span>
+          </div>
+          
+          <!-- Controls & Search Bar -->
+          <div class="flex flex-wrap items-center gap-2">
+            <!-- Small Autocomplete/Search input -->
+            <div class="relative w-44">
+              <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40" :size="12" />
+              <input 
+                v-model="configsSearchQuery"
+                type="text" 
+                placeholder="Search configs..." 
+                class="w-full pl-7 pr-2.5 py-1 bg-white/5 border border-white/10 rounded-lg text-[10px] focus:outline-none focus:border-[var(--color-accent-primary)] text-white font-medium bg-[#0f172a]"
+              />
+            </div>
+            
+            <button 
+              @click="selectAllConfigs" 
+              class="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-[9px] font-black uppercase tracking-wider text-white transition-colors"
+            >
+              Select All
+            </button>
+            <button 
+              @click="clearAllConfigs" 
+              class="px-2.5 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-[9px] font-black uppercase tracking-wider text-red-400 transition-colors"
+            >
+              Clear All
+            </button>
+          </div>
+        </div>
+
+        <!-- Config Buttons list: capped height with premium scrolling -->
+        <div class="max-h-24 overflow-y-auto pr-1 custom-scrollbar">
+          <div class="flex flex-wrap gap-2 py-0.5">
             <button
-              v-for="c in configs"
+              v-for="c in filteredConfigs"
               :key="c.config_id"
               @click="toggleConfig(c.config_id)"
-              class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all"
+              class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all select-none"
               :class="enabledConfigs.has(c.config_id)
-                ? 'border-white/20 bg-white/10 text-white'
+                ? 'border-white/20 bg-white/10 text-white shadow-sm'
                 : 'border-white/5 bg-white/[0.02] text-[var(--color-text-muted)] opacity-40'"
             >
-              <span class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: safeConfigColor(c) }"></span>
-              {{ c.label }}
+              <div class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: safeConfigColor(c) }"></div>
+              <span>{{ c.label }}</span>
             </button>
+            <div v-if="filteredConfigs.length === 0" class="text-[10px] text-[var(--color-text-muted)] italic py-2 pl-1">
+              No configurations match your search criteria.
+            </div>
           </div>
         </div>
       </div>

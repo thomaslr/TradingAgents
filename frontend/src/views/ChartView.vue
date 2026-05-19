@@ -54,8 +54,33 @@ const periods = [
   { label: '5Y', value: '5y' },
 ]
 
+function loadSharedConfigs() {
+  try {
+    const saved = localStorage.getItem('shared_enabled_configs')
+    if (saved) {
+      const parsed = JSON.parse(saved)
+      if (Array.isArray(parsed)) {
+        enabledConfigs.value = new Set(parsed)
+        return
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse shared configs', e)
+  }
+  // Default: empty (all off by default on charts view as requested)
+  enabledConfigs.value = new Set()
+}
+
+function handleStorageEvent(event: StorageEvent) {
+  if (event.key === 'shared_enabled_configs') {
+    loadSharedConfigs()
+    loadChart()
+  }
+}
+
 onMounted(async () => {
   await Promise.all([loadTickers(), loadConfigs()])
+  window.addEventListener('storage', handleStorageEvent)
   if (tickerInput.value) {
     await loadChart()
   }
@@ -64,7 +89,7 @@ onMounted(async () => {
 async function loadConfigs() {
   try {
     configs.value = await fetchConfigs()
-    enabledConfigs.value = new Set()
+    loadSharedConfigs()
   } catch (e) {
     console.error('Failed to load configs', e)
   }
@@ -75,6 +100,7 @@ function toggleConfig(configId: string) {
   if (s.has(configId)) s.delete(configId)
   else s.add(configId)
   enabledConfigs.value = s
+  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(s)))
   loadChart()
 }
 
@@ -96,6 +122,7 @@ async function loadTickers() {
 }
 
 onBeforeUnmount(() => {
+  window.removeEventListener('storage', handleStorageEvent)
   if (chart) {
     chart.remove()
     chart = null
