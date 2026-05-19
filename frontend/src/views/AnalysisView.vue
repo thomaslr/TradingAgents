@@ -19,6 +19,8 @@ import {
   yieldAnalysis,
   purgeAnalysis,
   addSchedule,
+  pauseQueuedJob,
+  resumeQueuedJob,
   type ScheduleJob 
 } from '../api/client'
 import { Play, Pause, Square, Clock, Trash2, CheckCircle, RefreshCw, AlertCircle, GripVertical, Settings2, Zap, ArrowUp, AlertTriangle } from 'lucide-vue-next'
@@ -501,6 +503,28 @@ async function removeFromQueue(jobId: string) {
     await loadQueue()
   } catch (e: any) {
     error.value = `Failed to remove: ${e.message}`
+  }
+}
+
+async function handleJobPause(jobId: string) {
+  try {
+    await pauseQueuedJob(jobId)
+    await loadQueue()
+    successMessage.value = 'Queue job paused.'
+    error.value = ''
+  } catch (e: any) {
+    error.value = `Failed to pause job: ${e.message}`
+  }
+}
+
+async function handleJobResume(jobId: string) {
+  try {
+    await resumeQueuedJob(jobId)
+    await loadQueue()
+    successMessage.value = 'Queue job released for processing.'
+    error.value = ''
+  } catch (e: any) {
+    error.value = `Failed to release job: ${e.message}`
   }
 }
 
@@ -1099,9 +1123,18 @@ function formatDate(dateStr: string | null): string {
                   <div class="opacity-30 group-hover:opacity-100 transition-opacity">
                     <GripVertical :size="16" />
                   </div>
-                  <div class="space-y-1">
-                    <div class="flex gap-1">
-                      <span v-for="t in job.tickers" :key="t" class="text-[11px] font-black text-white bg-blue-500/20 px-1.5 py-0.5 rounded">{{ t }}</span>
+                  <div class="space-y-1 min-w-0 flex-1">
+                    <div class="flex flex-wrap gap-1 items-center">
+                      <template v-for="(t, idx) in job.tickers" :key="t">
+                        <span v-if="idx < 4" class="text-[11px] font-black text-white bg-blue-500/20 px-1.5 py-0.5 rounded">{{ t }}</span>
+                      </template>
+                      <span 
+                        v-if="job.tickers.length > 4" 
+                        class="text-[10px] font-black text-blue-300 bg-blue-500/10 px-1.5 py-0.5 rounded cursor-help border border-blue-500/20"
+                        :title="job.tickers.join(', ')"
+                      >
+                        +{{ job.tickers.length - 4 }} more
+                      </span>
                     </div>
                     <div class="text-[10px] text-white font-mono font-bold">
                       <span v-if="job.dates && job.dates.length === 1">{{ job.dates[0] }}</span>
@@ -1112,6 +1145,24 @@ function formatDate(dateStr: string | null): string {
                 </div>
                 <!-- Job Actions -->
                 <div v-if="job.id !== runningJob?.id" class="flex items-center gap-2">
+                  <!-- Pause/Play Individual Job -->
+                  <button 
+                    v-if="job.status === 'paused'"
+                    @click="handleJobResume(job.id)"
+                    class="p-2 hover:bg-white/10 rounded-lg transition-colors group/btn"
+                    title="Release / Resume Job"
+                  >
+                    <Play :size="18" class="text-emerald-400 group-hover/btn:scale-110 transition-transform" />
+                  </button>
+                  <button 
+                    v-else-if="job.status === 'pending'"
+                    @click="handleJobPause(job.id)"
+                    class="p-2 hover:bg-white/10 rounded-lg transition-colors group/btn"
+                    title="Pause Job"
+                  >
+                    <Pause :size="18" class="text-amber-400 group-hover/btn:scale-110 transition-transform" />
+                  </button>
+
                   <button 
                     @click="promoteToActive(job.id)"
                     class="p-2 hover:bg-white/10 rounded-lg transition-colors group/btn"
@@ -1139,6 +1190,17 @@ function formatDate(dateStr: string | null): string {
                 </span>
                 <span class="px-2.5 py-1 bg-blue-500/30 text-blue-200 text-[9px] font-black rounded-lg border border-blue-500/30 tracking-widest">
                   DEPTH {{ job.depth }}
+                </span>
+                <span 
+                  class="px-2.5 py-1 text-[9px] font-black rounded-lg uppercase tracking-wider border"
+                  :class="[
+                    job.id === runningJob?.id ? 'bg-green-500/20 text-green-300 border-green-500/30 animate-pulse' :
+                    job.status === 'paused' ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' :
+                    job.status === 'failed' ? 'bg-red-500/20 text-red-300 border-red-500/30' :
+                    'bg-blue-500/20 text-blue-300 border-blue-500/30'
+                  ]"
+                >
+                  {{ job.id === runningJob?.id ? 'RUNNING' : job.status }}
                 </span>
               </div>
             </div>

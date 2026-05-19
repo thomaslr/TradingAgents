@@ -172,6 +172,14 @@ export async function resumeResearchQueue(): Promise<void> {
   await api.post('/analysis/queue/resume')
 }
 
+export async function pauseQueuedJob(jobId: string): Promise<void> {
+  await api.post(`/analysis/queue/${jobId}/pause`)
+}
+
+export async function resumeQueuedJob(jobId: string): Promise<void> {
+  await api.post(`/analysis/queue/${jobId}/resume`)
+}
+
 // ── Health & Config ──────────────────────────────────────
 export async function healthCheck() {
   const { data } = await api.get('/health')

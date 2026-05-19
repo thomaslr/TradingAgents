@@ -608,6 +608,8 @@ class RunRegistry:
             max_order = cur.fetchone()[0] or 0
             sort_order = max_order + 1
 
+        status = job_data.get("status", "paused")
+
         self.conn.execute(
             """
             INSERT INTO research_queue (
@@ -624,7 +626,7 @@ class RunRegistry:
                 job_data["deep_model"],
                 job_data["depth"],
                 1 if job_data.get("force") else 0,
-                "pending",
+                status,
                 sort_order,
                 now
             )

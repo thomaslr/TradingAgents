@@ -355,7 +355,8 @@ def add_to_research_queue(
         "quick_model": item.get("quickModel", ""),
         "deep_model": item.get("deepModel", ""),
         "depth": item.get("depth", 1),
-        "force": item.get("force", False)
+        "force": item.get("force", False),
+        "status": "paused"
     }
     registry.add_to_queue(job_data, priority=item.get("priority", False))
     start_worker_if_needed(background_tasks, registry.db_path, config)
@@ -369,6 +370,22 @@ def remove_from_research_queue(job_id: str, registry: RunRegistry = Depends(get_
 @router.post("/queue/reorder")
 def reorder_research_queue(job_ids: List[str], registry: RunRegistry = Depends(get_registry)):
     registry.reorder_queue(job_ids)
+    return {"status": "success"}
+
+@router.post("/queue/{job_id}/pause")
+def pause_queued_job(job_id: str, registry: RunRegistry = Depends(get_registry)):
+    registry.update_queue_status(job_id, "paused")
+    return {"status": "success"}
+
+@router.post("/queue/{job_id}/resume")
+def resume_queued_job(
+    job_id: str, 
+    background_tasks: BackgroundTasks, 
+    registry: RunRegistry = Depends(get_registry), 
+    config: dict = Depends(get_config)
+):
+    registry.update_queue_status(job_id, "pending")
+    start_worker_if_needed(background_tasks, registry.db_path, config)
     return {"status": "success"}
 
 @router.post("/queue/start")
@@ -405,7 +422,8 @@ def start_batch_analysis(request: AnalysisRequest, background_tasks: BackgroundT
         "quick_model": request.quick_think_llm or config.get("quick_think_llm", ""),
         "deep_model": request.deep_think_llm or config.get("deep_think_llm", ""),
         "depth": request.max_debate_rounds or config.get("max_debate_rounds", 1),
-        "force": request.force
+        "force": request.force,
+        "status": "pending"
     }
     
     registry.add_to_queue(job_data, priority=True)
