@@ -17,11 +17,30 @@ const sortColumn = ref<keyof Run | 'completed_at'>((localStorage.getItem('dash_s
 const sortDirection = ref<'asc' | 'desc'>((localStorage.getItem('dash_sort_dir') as any) || 'desc')
 const selectedRuns = ref<Set<number>>(new Set())
 
+const selectedQuickModel = ref(localStorage.getItem('dash_quick') || 'ALL')
+const selectedDeepModel = ref(localStorage.getItem('dash_deep') || 'ALL')
+const selectedDepth = ref(localStorage.getItem('dash_depth') || 'ALL')
+
 watch(searchQuery, (v) => localStorage.setItem('dash_search', v))
 watch(startDate, (v) => localStorage.setItem('dash_start', v))
 watch(endDate, (v) => localStorage.setItem('dash_end', v))
 watch(sortColumn, (v) => localStorage.setItem('dash_sort_col', v))
 watch(sortDirection, (v) => localStorage.setItem('dash_sort_dir', v))
+watch(selectedQuickModel, (v) => localStorage.setItem('dash_quick', v))
+watch(selectedDeepModel, (v) => localStorage.setItem('dash_deep', v))
+watch(selectedDepth, (v) => localStorage.setItem('dash_depth', v))
+
+const uniqueQuickModels = computed(() => {
+  return [...new Set(runs.value.map(r => r.quick_model).filter(Boolean))].sort()
+})
+
+const uniqueDeepModels = computed(() => {
+  return [...new Set(runs.value.map(r => r.deep_model).filter(Boolean))].sort()
+})
+
+const uniqueDepths = computed(() => {
+  return [...new Set(runs.value.map(r => r.depth).filter(d => d !== null && d !== undefined))].sort((a, b) => Number(a) - Number(b))
+})
 
 function padDate(val: string): string {
   if (!val) return val
@@ -88,7 +107,10 @@ const processedRuns = computed(() => {
       (r.rating && r.rating.toLowerCase().includes(q)) ||
       (r.action && r.action.toLowerCase().includes(q)) ||
       (r.provider && r.provider.toLowerCase().includes(q)) ||
-      (r.status && r.status.toLowerCase().includes(q))
+      (r.status && r.status.toLowerCase().includes(q)) ||
+      (r.quick_model && r.quick_model.toLowerCase().includes(q)) ||
+      (r.deep_model && r.deep_model.toLowerCase().includes(q)) ||
+      (r.depth !== undefined && r.depth !== null && String(r.depth).includes(q))
     )
   }
 
@@ -98,6 +120,17 @@ const processedRuns = computed(() => {
   }
   if (endDate.value) {
     result = result.filter(r => r.trade_date <= endDate.value)
+  }
+
+  // Model & Depth filters
+  if (selectedQuickModel.value !== 'ALL') {
+    result = result.filter(r => r.quick_model === selectedQuickModel.value)
+  }
+  if (selectedDeepModel.value !== 'ALL') {
+    result = result.filter(r => r.deep_model === selectedDeepModel.value)
+  }
+  if (selectedDepth.value !== 'ALL') {
+    result = result.filter(r => r.depth !== undefined && r.depth !== null && String(r.depth) === String(selectedDepth.value))
   }
 
   // Sort
@@ -337,6 +370,36 @@ function formatDate(dateStr: string | null): string {
       </div>
     </div>
 
+    <!-- Model & Depth Select Filters -->
+    <div class="flex flex-wrap items-center gap-3 mb-4">
+      <!-- Quick Model Filter -->
+      <div class="flex items-center gap-2.5 px-3 py-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg shadow-sm hover:border-white/10 transition-colors">
+        <span class="text-[9px] font-black uppercase tracking-widest text-[var(--color-text-muted)] border-r border-[var(--color-border-default)] pr-2">Quick</span>
+        <select v-model="selectedQuickModel" class="bg-transparent border-none text-xs font-bold focus:outline-none cursor-pointer p-0 text-[var(--color-text-primary)]">
+          <option value="ALL" class="bg-[#0f172a] text-white">All Quick Models</option>
+          <option v-for="m in uniqueQuickModels" :key="m" :value="m" class="bg-[#0f172a] text-white">{{ m }}</option>
+        </select>
+      </div>
+
+      <!-- Deep Model Filter -->
+      <div class="flex items-center gap-2.5 px-3 py-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg shadow-sm hover:border-white/10 transition-colors">
+        <span class="text-[9px] font-black uppercase tracking-widest text-[var(--color-text-muted)] border-r border-[var(--color-border-default)] pr-2">Deep</span>
+        <select v-model="selectedDeepModel" class="bg-transparent border-none text-xs font-bold focus:outline-none cursor-pointer p-0 text-[var(--color-text-primary)]">
+          <option value="ALL" class="bg-[#0f172a] text-white">All Deep Models</option>
+          <option v-for="m in uniqueDeepModels" :key="m" :value="m" class="bg-[#0f172a] text-white">{{ m }}</option>
+        </select>
+      </div>
+
+      <!-- Depth Filter -->
+      <div class="flex items-center gap-2.5 px-3 py-1.5 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg shadow-sm hover:border-white/10 transition-colors">
+        <span class="text-[9px] font-black uppercase tracking-widest text-[var(--color-text-muted)] border-r border-[var(--color-border-default)] pr-2">Depth</span>
+        <select v-model="selectedDepth" class="bg-transparent border-none text-xs font-bold focus:outline-none cursor-pointer p-0 text-[var(--color-text-primary)]">
+          <option value="ALL" class="bg-[#0f172a] text-white">All Depths</option>
+          <option v-for="d in uniqueDepths" :key="d" :value="d" class="bg-[#0f172a] text-white">{{ d }} Rounds</option>
+        </select>
+      </div>
+    </div>
+
     <!-- Recent Runs Table -->
     <div class="rounded-xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] overflow-hidden">
       <div class="flex items-center justify-between p-4 md:p-5 border-b border-[var(--color-border-default)]">
@@ -388,6 +451,7 @@ function formatDate(dateStr: string | null): string {
               <th class="px-5 py-3 text-left cursor-pointer hover:text-[var(--color-text-primary)]" @click="handleSort('trade_date')">
                 <div class="flex items-center gap-1">Date <ArrowUp v-if="sortColumn === 'trade_date' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'trade_date' && sortDirection === 'desc'" :size="12"/></div>
               </th>
+              <th class="px-5 py-3 text-left">Configuration (Depth)</th>
               <th class="px-5 py-3 text-left cursor-pointer hover:text-[var(--color-text-primary)]" @click="handleSort('rating')">
                 <div class="flex items-center gap-1">Rating (AI) <ArrowUp v-if="sortColumn === 'rating' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'rating' && sortDirection === 'desc'" :size="12"/></div>
               </th>
@@ -424,6 +488,23 @@ function formatDate(dateStr: string | null): string {
               </td>
               <td class="px-5 py-4 font-semibold">{{ run.ticker }}</td>
               <td class="px-5 py-4 text-[var(--color-text-secondary)]">{{ run.trade_date }}</td>
+              <td class="px-5 py-4">
+                <div v-if="run.quick_model || run.deep_model" class="flex flex-col gap-1.5 py-1">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[8px] font-black uppercase text-amber-500/70 tracking-widest w-10">Quick</span>
+                    <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ run.quick_model }}</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[8px] font-black uppercase text-blue-400/70 tracking-widest w-10">Deep</span>
+                    <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ run.deep_model }}</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[8px] font-black uppercase text-purple-400/70 tracking-widest w-10">Depth</span>
+                    <span class="text-[9px] font-bold text-purple-400/90 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/10 font-mono">{{ run.depth }} Rounds</span>
+                  </div>
+                </div>
+                <div v-else class="text-[var(--color-text-muted)] text-xs font-mono">—</div>
+              </td>
               <td class="px-5 py-4 font-medium" :class="getRatingColor(run.rating)">
                 {{ run.rating || '—' }}
               </td>
@@ -499,6 +580,18 @@ function formatDate(dateStr: string | null): string {
           <div class="flex items-center justify-between text-xs text-[var(--color-text-muted)] pl-7">
             <span>{{ run.trade_date }}</span>
             <span v-if="run.close_price" class="font-mono">${{ run.close_price.toFixed(2) }}</span>
+          </div>
+          <!-- Mobile config layout -->
+          <div v-if="run.quick_model || run.deep_model" class="pl-7 mt-2 flex flex-col gap-1 text-[10px]">
+            <div class="flex items-center gap-1.5">
+              <span class="text-[8px] font-black uppercase text-amber-500/70 tracking-widest">Q:</span>
+              <span class="text-[9px] font-bold text-white/80 bg-white/5 px-1.5 py-0.2 rounded border border-white/5 font-mono">{{ run.quick_model }}</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <span class="text-[8px] font-black uppercase text-blue-400/70 tracking-widest">D:</span>
+              <span class="text-[9px] font-bold text-white/80 bg-white/5 px-1.5 py-0.2 rounded border border-white/5 font-mono">{{ run.deep_model }}</span>
+              <span class="text-[8px] text-purple-400/80 bg-purple-500/10 border border-purple-500/10 px-1 py-0.2 rounded font-mono ml-1">{{ run.depth }} Rnd</span>
+            </div>
           </div>
         </div>
       </div>

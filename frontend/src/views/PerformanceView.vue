@@ -177,6 +177,12 @@ const filteredEntries = computed(() => {
   }
 
 
+  // Apply Config Filter: only show enabled configurations
+  if (enabledConfigs.value.size > 0) {
+    result = result.filter(e => e.config_id && enabledConfigs.value.has(e.config_id))
+  } else {
+    result = []
+  }
   
   return result
 })
@@ -287,9 +293,7 @@ const multiConfigStats = computed(() => {
 })
 
 
-const activeConfigs = computed(() => {
-  return configs.value.filter(c => enabledConfigs.value.size === 0 || enabledConfigs.value.has(c.config_id))
-})
+
 
 
 const performanceData = computed(() => {
@@ -757,17 +761,24 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
 
           </div>
         </h3>
-        <div class="flex flex-wrap items-center gap-4 text-[10px] font-bold uppercase tracking-wider">
-          <!-- Dynamic Strategy Legends -->
-          <div v-for="c in activeConfigs" 
-               :key="c.config_id" class="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded-md border border-white/5">
+        <div class="flex flex-wrap items-center gap-3 text-[10px] font-bold uppercase tracking-wider">
+          <!-- Dynamic Strategy Toggles -->
+          <button 
+            v-for="c in configs" 
+            :key="c.config_id" 
+            @click="toggleConfig(c.config_id)"
+            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition-all cursor-pointer select-none"
+            :class="enabledConfigs.has(c.config_id) 
+              ? 'bg-white/5 border-white/10 opacity-100 hover:bg-white/10 text-white' 
+              : 'bg-transparent border-transparent opacity-30 hover:opacity-50 text-[var(--color-text-muted)]'"
+          >
             <div class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: safeConfigColor(c) }"></div>
-            <span class="text-[var(--color-text-secondary)]">{{ c.label }}</span>
-          </div>
+            <span>{{ c.label }}</span>
+          </button>
           <!-- Benchmark Legend -->
-          <div class="flex items-center gap-1.5 bg-white/5 px-2 py-1 rounded-md border border-white/5">
+          <div class="flex items-center gap-1.5 bg-white/5 px-2.5 py-1.5 rounded-lg border border-white/5 text-white">
             <div class="w-2.5 h-2.5 rounded-full bg-white border border-dashed border-white/40"></div>
-            <span class="text-[var(--color-text-secondary)]">Benchmark ({{ benchmarkType === 'SPY' ? 'S&P 500' : 'Hold' }})</span>
+            <span>Benchmark ({{ benchmarkType === 'SPY' ? 'S&P 500' : 'Hold' }})</span>
           </div>
         </div>
       </div>
@@ -802,9 +813,26 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
                 <td class="px-6 py-4 text-sm font-mono text-[var(--color-text-muted)]">{{ entry.date }}</td>
                 <td class="px-6 py-4 font-bold">{{ entry.ticker }}</td>
                 <td class="px-6 py-4">
-                  <div class="flex flex-col">
-                    <span class="text-xs font-bold text-white">{{ entry.quick_model }}</span>
-                    <span class="text-[10px] text-[var(--color-text-muted)]">Depth: {{ entry.depth }} | Rating: {{ getSignalLabel(entry.rating) }}</span>
+                  <div class="flex flex-col gap-1.5 py-1">
+                    <div class="flex items-center gap-2">
+                      <span class="text-[8px] font-black uppercase text-amber-500/70 tracking-widest w-10">Quick</span>
+                      <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ entry.quick_model }}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-[8px] font-black uppercase text-blue-400/70 tracking-widest w-10">Deep</span>
+                      <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ entry.deep_model }}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-[8px] font-black uppercase text-purple-400/70 tracking-widest w-10">Depth</span>
+                      <span class="text-[9px] font-bold text-purple-400/90 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/10 font-mono">{{ entry.depth }} Rounds</span>
+                      
+                      <span class="text-[8px] font-bold px-1.5 py-0.5 rounded border font-mono ml-auto"
+                            :class="getSignalLabel(entry.rating) === 'BUY' || getSignalLabel(entry.rating) === 'OVERWEIGHT' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/10'
+                                  : getSignalLabel(entry.rating) === 'SELL' || getSignalLabel(entry.rating) === 'UNDERWEIGHT' ? 'bg-rose-500/10 text-rose-400 border-rose-500/10'
+                                  : 'bg-amber-500/5 text-amber-500/80 border-amber-500/10'">
+                        {{ getSignalLabel(entry.rating) }}
+                      </span>
+                    </div>
                   </div>
                 </td>
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { fetchMetrics, fetchCacheStats, clearAnalystCache, type AnalysisMetrics, type CacheStats } from '../api/client'
 import { Beaker, Zap, Cpu, BarChart3, RefreshCw, Layers, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-vue-next'
 
@@ -7,9 +7,136 @@ const metrics = ref<AnalysisMetrics[]>([])
 const loading = ref(true)
 const selectedQuickModel = ref('ALL')
 const selectedDeepModel = ref('ALL')
+const selectedDepth = ref('ALL')
+const hoveredGroup = ref<any>(null)
 
 const sortKey = ref<string>('created_at')
 const sortOrder = ref<'asc' | 'desc'>('desc')
+
+const isAnalyticsCollapsed = ref(localStorage.getItem('res_analytics_collapsed') === 'true')
+const isTableCollapsed = ref(localStorage.getItem('res_table_collapsed') === 'true')
+
+watch(isAnalyticsCollapsed, (v) => localStorage.setItem('res_analytics_collapsed', String(v)))
+watch(isTableCollapsed, (v) => localStorage.setItem('res_table_collapsed', String(v)))
+
+// shootout aggregates
+const shootoutStats = computed(() => {
+  const groups = new Map<string, {
+    quick_model: string;
+    deep_model: string;
+    depth: number;
+    runs: AnalysisMetrics[];
+  }>()
+
+  filteredMetrics.value.forEach(m => {
+    if (!m.quick_model || !m.deep_model) return
+    const key = `${m.quick_model} | ${m.deep_model} | ${m.depth} Rounds`
+    if (!groups.has(key)) {
+      groups.set(key, {
+        quick_model: m.quick_model,
+        deep_model: m.deep_model,
+        depth: Number(m.depth) || 0,
+        runs: []
+      })
+    }
+    groups.get(key)!.runs.push(m)
+  })
+
+  return Array.from(groups.entries()).map(([key, group], sIndex) => {
+    const latencies = group.runs.map(r => r.total_sec).filter(t => t > 0)
+    const tpsValues = group.runs.map(r => r.avg_tps).filter(t => t > 0)
+    
+    const count = group.runs.length
+    const avgLatency = latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : 0
+    const avgTps = tpsValues.length ? tpsValues.reduce((a, b) => a + b, 0) / tpsValues.length : 0
+    
+    const minLatency = latencies.length ? Math.min(...latencies) : 0
+    const maxLatency = latencies.length ? Math.max(...latencies) : 0
+    const sortedLatencies = [...latencies].sort((a, b) => a - b)
+
+    // Assign a beautiful unique HSL color
+    const hue = (sIndex * 137.5) % 360
+    const color = `hsl(${hue}, 85%, 60%)`
+
+    return {
+      key,
+      quick_model: group.quick_model,
+      deep_model: group.deep_model,
+      depth: group.depth,
+      count,
+      avgLatency,
+      avgTps,
+      minLatency,
+      maxLatency,
+      sortedLatencies,
+      latencies,
+      color
+    }
+  }).sort((a, b) => b.count - a.count)
+})
+
+const cdfData = computed(() => {
+  if (shootoutStats.value.length === 0) return null
+
+  const allLatencies = shootoutStats.value.flatMap(s => s.latencies)
+  if (allLatencies.length === 0) return null
+
+  const globalMin = 0
+  const globalMax = Math.max(...allLatencies)
+  
+  const steps = 30
+  const stepSize = globalMax / steps
+  const xValues = Array.from({ length: steps + 1 }, (_, i) => i * stepSize)
+
+  const series = shootoutStats.value.map((stat) => {
+    const latencies = stat.sortedLatencies
+    const points = xValues.map(x => {
+      const completedCount = latencies.filter(l => l <= x).length
+      const percentage = (completedCount / latencies.length) * 100
+      return { x, y: percentage }
+    })
+
+    return {
+      label: stat.key,
+      color: stat.color,
+      points,
+      stat
+    }
+  })
+
+  return {
+    globalMin,
+    globalMax,
+    xValues,
+    series
+  }
+})
+
+function getSvgCoords(x: number, y: number, minX: number, maxX: number) {
+  const padding = { top: 20, right: 30, bottom: 40, left: 50 }
+  const width = 800
+  const height = 240
+  
+  const plotWidth = width - padding.left - padding.right
+  const plotHeight = height - padding.top - padding.bottom
+  
+  const rangeX = maxX - minX || 1
+  const pctX = (x - minX) / rangeX
+  const svgX = padding.left + pctX * plotWidth
+  
+  const pctY = y / 100
+  const svgY = padding.top + (1 - pctY) * plotHeight
+  
+  return { x: svgX, y: svgY }
+}
+
+function getCdfPath(points: {x: number, y: number}[], minX: number, maxX: number): string {
+  if (points.length === 0) return ''
+  return points.map((p, i) => {
+    const coords = getSvgCoords(p.x, p.y, minX, maxX)
+    return `${i === 0 ? 'M' : 'L'} ${coords.x.toFixed(1)} ${coords.y.toFixed(1)}`
+  }).join(' ')
+}
 
 function toggleSort(key: string) {
   if (sortKey.value === key) {
@@ -97,6 +224,11 @@ const filteredMetrics = computed(() => {
     result = result.filter(m => m.deep_model === selectedDeepModel.value)
   }
 
+  // Apply Depth Filter
+  if (selectedDepth.value !== 'ALL') {
+    result = result.filter(m => String(m.depth) === String(selectedDepth.value))
+  }
+
   // Apply Sorting
   if (sortKey.value) {
     result = [...result].sort((a, b) => {
@@ -135,6 +267,14 @@ const uniqueDeepModels = computed(() => {
     if (m.deep_model) models.add(m.deep_model)
   })
   return Array.from(models).sort()
+})
+
+const uniqueDepths = computed(() => {
+  const depths = new Set<string>()
+  metrics.value.forEach(m => {
+    if (m.depth !== null && m.depth !== undefined) depths.add(String(m.depth))
+  })
+  return Array.from(depths).sort((a, b) => Number(a) - Number(b))
 })
 
 function formatTime(sec: number) {
@@ -266,11 +406,244 @@ function formatRunDate(dateStr: string | null): string {
           <option v-for="m in uniqueDeepModels" :key="m" :value="m" class="bg-[#1a1f2e] text-white">{{ m }}</option>
         </select>
       </div>
+
+      <!-- Debate Depth Filter -->
+      <div class="flex items-center gap-3 px-4 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-xl shadow-md hover:border-white/20 transition-colors">
+        <Layers :size="16" class="opacity-40 text-purple-400" />
+        <span class="text-[9px] font-black uppercase tracking-widest text-[var(--color-text-muted)] border-r border-white/10 pr-2">Depth</span>
+        <select v-model="selectedDepth" class="bg-transparent border-none text-xs font-black uppercase tracking-widest focus:outline-none cursor-pointer">
+          <option value="ALL" class="bg-[#1a1f2e] text-white">All Depths</option>
+          <option v-for="d in uniqueDepths" :key="d" :value="d" class="bg-[#1a1f2e] text-white">{{ d }} Rounds</option>
+        </select>
+      </div>
     </div>
 
-    <!-- Metrics Table -->
+    <!-- Analytics Section (Collapsable) -->
+    <div v-if="hasMetrics && cdfData" class="bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-2xl overflow-hidden shadow-2xl mb-8">
+      <div 
+        @click="isAnalyticsCollapsed = !isAnalyticsCollapsed" 
+        class="flex items-center justify-between p-5 border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/20 cursor-pointer select-none hover:bg-[var(--color-bg-elevated)]/30 transition-colors"
+      >
+        <div class="flex items-center gap-2.5">
+          <Beaker :size="18" class="text-[var(--color-accent-primary)]" />
+          <h2 class="text-sm font-bold uppercase tracking-wider">Performance Shootout Analytics</h2>
+          <span v-if="isAnalyticsCollapsed" class="text-[9px] font-black tracking-widest text-[var(--color-text-muted)] bg-white/5 border border-white/5 px-2 py-0.5 rounded">Collapsed</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] text-[var(--color-text-muted)] font-black uppercase tracking-widest">{{ isAnalyticsCollapsed ? 'Expand' : 'Collapse' }}</span>
+          <ArrowDown :size="14" class="transition-transform duration-300" :class="{ '-rotate-180': !isAnalyticsCollapsed }" />
+        </div>
+      </div>
+      
+      <div v-show="!isAnalyticsCollapsed" class="p-6 md:p-8 grid grid-cols-1 lg:grid-cols-5 gap-8">
+        <!-- CDF Chart Area -->
+        <div class="lg:col-span-3 space-y-4">
+          <div>
+            <h3 class="text-xs font-black uppercase tracking-widest text-[var(--color-text-muted)] mb-1">Cumulative Distribution Function (CDF)</h3>
+            <p class="text-[10px] text-[var(--color-text-muted)] leading-relaxed">
+              Compares completed runs percentage against latency. Steeper curves to the left denote consistently faster configurations.
+            </p>
+          </div>
+          
+          <div class="relative bg-black/25 rounded-xl border border-white/5 p-4 overflow-hidden">
+            <svg viewBox="0 0 800 240" class="w-full h-auto font-mono select-none">
+              <defs>
+                <filter id="glow-lines" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="3" result="blur" />
+                  <feMerge>
+                    <feMergeNode in="blur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+              </defs>
+
+              <!-- Y-Axis Percentile Grid lines -->
+              <line x1="50" y1="20" x2="770" y2="20" stroke="#334155" stroke-dasharray="4 4" stroke-width="1" />
+              <text x="40" y="24" fill="#64748b" text-anchor="end" class="text-[9px] font-black">100%</text>
+
+              <line x1="50" y1="65" x2="770" y2="65" stroke="#1e293b" stroke-dasharray="4 4" stroke-width="1" />
+              <text x="40" y="69" fill="#64748b" text-anchor="end" class="text-[9px] font-black">75%</text>
+
+              <line x1="50" y1="110" x2="770" y2="110" stroke="#1e293b" stroke-dasharray="4 4" stroke-width="1" />
+              <text x="40" y="114" fill="#64748b" text-anchor="end" class="text-[9px] font-black">50%</text>
+
+              <line x1="50" y1="155" x2="770" y2="155" stroke="#1e293b" stroke-dasharray="4 4" stroke-width="1" />
+              <text x="40" y="159" fill="#64748b" text-anchor="end" class="text-[9px] font-black">25%</text>
+
+              <line x1="50" y1="200" x2="770" y2="200" stroke="#334155" stroke-width="1.5" />
+              <text x="40" y="204" fill="#64748b" text-anchor="end" class="text-[9px] font-black">0%</text>
+
+              <!-- X-Axis Line -->
+              <line x1="50" y1="20" x2="50" y2="200" stroke="#334155" stroke-width="1.5" />
+
+              <!-- X-Axis Latency Markers -->
+              <!-- 25% Marker -->
+              <line :x1="50 + 720 * 0.25" y1="20" :x2="50 + 720 * 0.25" y2="200" stroke="#1e293b" stroke-dasharray="4 4" stroke-width="1" />
+              <text :x="50 + 720 * 0.25" y="215" fill="#64748b" text-anchor="middle" class="text-[9px] font-black">
+                {{ formatTime(cdfData.globalMax * 0.25) }}
+              </text>
+
+              <!-- 50% Marker -->
+              <line :x1="50 + 720 * 0.5" y1="20" :x2="50 + 720 * 0.5" y2="200" stroke="#1e293b" stroke-dasharray="4 4" stroke-width="1" />
+              <text :x="50 + 720 * 0.5" y="215" fill="#64748b" text-anchor="middle" class="text-[9px] font-black">
+                {{ formatTime(cdfData.globalMax * 0.5) }}
+              </text>
+
+              <!-- 75% Marker -->
+              <line :x1="50 + 720 * 0.75" y1="20" :x2="50 + 720 * 0.75" y2="200" stroke="#1e293b" stroke-dasharray="4 4" stroke-width="1" />
+              <text :x="50 + 720 * 0.75" y="215" fill="#64748b" text-anchor="middle" class="text-[9px] font-black">
+                {{ formatTime(cdfData.globalMax * 0.75) }}
+              </text>
+
+              <!-- 100% Marker -->
+              <line x1="770" y1="20" x2="770" y2="200" stroke="#334155" stroke-dasharray="4 4" stroke-width="1" />
+              <text x="770" y="215" fill="#64748b" text-anchor="middle" class="text-[9px] font-black">
+                {{ formatTime(cdfData.globalMax) }}
+              </text>
+
+              <!-- Series CDF Lines -->
+              <path 
+                v-for="s in cdfData.series" 
+                :key="s.label" 
+                :d="getCdfPath(s.points, cdfData.globalMin, cdfData.globalMax)" 
+                fill="none" 
+                :stroke="s.color" 
+                stroke-width="2.5" 
+                stroke-linecap="round" 
+                stroke-linejoin="round"
+                filter="url(#glow-lines)"
+                class="transition-all duration-300 pointer-events-none"
+                :class="{ 'opacity-100': !hoveredGroup || hoveredGroup.key === s.label, 'opacity-25': hoveredGroup && hoveredGroup.key !== s.label }"
+              />
+
+              <!-- Hover hit-target line (invisible & thick for premium interaction) -->
+              <path 
+                v-for="s in cdfData.series" 
+                :key="'hit-' + s.label" 
+                :d="getCdfPath(s.points, cdfData.globalMin, cdfData.globalMax)" 
+                fill="none" 
+                stroke="transparent" 
+                stroke-width="14" 
+                stroke-linecap="round" 
+                stroke-linejoin="round"
+                class="cursor-pointer"
+                @mouseenter="hoveredGroup = s.stat"
+                @mouseleave="hoveredGroup = null"
+              />
+            </svg>
+
+            <!-- Floating Tooltip Card -->
+            <div 
+              v-if="hoveredGroup" 
+              class="absolute top-4 left-1/2 transform -translate-x-1/2 bg-[#0c101b]/95 border border-white/10 p-4 rounded-xl shadow-2xl z-20 w-80 space-y-3 backdrop-blur-md transition-all duration-200 pointer-events-none"
+              :style="{ borderTop: `3px solid ${hoveredGroup.color}` }"
+            >
+              <div class="flex items-center justify-between border-b border-white/5 pb-2">
+                <span class="text-[9px] font-black text-white uppercase tracking-widest">Simulation Config</span>
+                <span class="text-[8px] font-black text-[var(--color-text-muted)] bg-white/5 px-2 py-0.5 rounded font-mono">{{ hoveredGroup.count }} runs</span>
+              </div>
+              
+              <!-- Unified Configuration Layout -->
+              <div class="space-y-1.5 text-left">
+                <div class="flex items-center justify-between">
+                  <span class="text-[8px] font-black text-amber-500/80 uppercase tracking-widest">Quick:</span>
+                  <span class="text-[10px] font-mono font-bold text-white bg-white/5 px-1.5 py-0.5 rounded">{{ hoveredGroup.quick_model }}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-[8px] font-black text-blue-400 uppercase tracking-widest">Deep:</span>
+                  <span class="text-[10px] font-mono font-bold text-white bg-white/5 px-1.5 py-0.5 rounded">{{ hoveredGroup.deep_model }}</span>
+                </div>
+                <div class="flex items-center justify-between">
+                  <span class="text-[8px] font-black text-purple-400 uppercase tracking-widest">Depth:</span>
+                  <span class="text-[10px] font-mono font-bold text-purple-300 bg-purple-500/10 px-1.5 py-0.5 rounded border border-purple-500/20 font-mono">{{ hoveredGroup.depth }}r</span>
+                </div>
+              </div>
+              
+              <div class="grid grid-cols-3 gap-2 pt-2 border-t border-white/5 text-center">
+                <div>
+                  <div class="text-[7px] font-black text-[var(--color-text-muted)] uppercase tracking-wider">Avg Latency</div>
+                  <div class="text-[10px] font-black text-white mt-0.5 font-mono">{{ formatTime(hoveredGroup.avgLatency) }}</div>
+                </div>
+                <div>
+                  <div class="text-[7px] font-black text-[var(--color-text-muted)] uppercase tracking-wider">Avg TPS</div>
+                  <div class="text-[10px] font-black text-emerald-400 mt-0.5 font-mono">{{ hoveredGroup.avgTps.toFixed(1) }}</div>
+                </div>
+                <div>
+                  <div class="text-[7px] font-black text-[var(--color-text-muted)] uppercase tracking-wider">Spread</div>
+                  <div class="text-[8px] font-black text-amber-500 mt-0.5 font-mono">{{ formatTime(hoveredGroup.minLatency) }} - {{ formatTime(hoveredGroup.maxLatency) }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Leaderboard / Details Area -->
+        <div class="lg:col-span-2 space-y-4">
+          <div>
+            <h3 class="text-xs font-black uppercase tracking-widest text-[var(--color-text-muted)] mb-1">Configuration Benchmark Leaderboard</h3>
+            <p class="text-[10px] text-[var(--color-text-muted)] leading-relaxed">
+              Comparison of unique model combinations sorted by popularity (number of shootout runs).
+            </p>
+          </div>
+
+          <div class="space-y-3 max-h-[220px] overflow-y-auto pr-2 custom-scrollbar">
+            <div 
+              v-for="stat in shootoutStats" 
+              :key="stat.key"
+              class="flex flex-col p-3 rounded-xl bg-white/5 border border-white/5 hover:border-white/10 transition-colors"
+            >
+              <!-- Configuration Labels -->
+              <div class="flex items-center justify-between gap-2 mb-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="text-[8px] font-black text-amber-500/80 bg-amber-500/5 px-1.5 py-0.5 rounded border border-amber-500/10 font-mono">{{ stat.quick_model }}</span>
+                  <span class="text-[8px] font-black text-blue-400/80 bg-blue-400/5 px-1.5 py-0.5 rounded border border-blue-400/10 font-mono">{{ stat.deep_model }}</span>
+                  <span class="text-[8px] font-black text-purple-400/80 bg-purple-500/5 px-1.5 py-0.5 rounded border border-purple-500/10 font-mono">{{ stat.depth }}r</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                  <div class="w-2 h-2 rounded-full" :style="{ backgroundColor: stat.color }"></div>
+                  <span class="text-[8px] font-black text-[var(--color-text-muted)] uppercase tracking-wider font-mono">{{ stat.count }} runs</span>
+                </div>
+              </div>
+
+              <!-- Metrics Row -->
+              <div class="grid grid-cols-3 gap-2 text-center">
+                <div class="bg-black/10 rounded-lg p-1.5 border border-white/5">
+                  <div class="text-[7px] font-black text-[var(--color-text-muted)] uppercase tracking-wider">Avg Latency</div>
+                  <div class="text-[10px] font-black text-white mt-0.5">{{ formatTime(stat.avgLatency) }}</div>
+                </div>
+                <div class="bg-black/10 rounded-lg p-1.5 border border-white/5">
+                  <div class="text-[7px] font-black text-[var(--color-text-muted)] uppercase tracking-wider">Avg TPS</div>
+                  <div class="text-[10px] font-black text-emerald-400 mt-0.5">{{ stat.avgTps.toFixed(1) }}</div>
+                </div>
+                <div class="bg-black/10 rounded-lg p-1.5 border border-white/5">
+                  <div class="text-[7px] font-black text-[var(--color-text-muted)] uppercase tracking-wider">Spread</div>
+                  <div class="text-[9px] font-black text-amber-500/80 mt-0.5">{{ formatTime(stat.minLatency) }} - {{ formatTime(stat.maxLatency) }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Metrics Table Section (Collapsable) -->
     <div class="bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-2xl overflow-hidden shadow-2xl">
-      <div class="overflow-x-auto">
+      <div 
+        @click="isTableCollapsed = !isTableCollapsed" 
+        class="flex items-center justify-between p-5 border-b border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/20 cursor-pointer select-none hover:bg-[var(--color-bg-elevated)]/30 transition-colors"
+      >
+        <div class="flex items-center gap-2.5">
+          <BarChart3 :size="18" class="text-amber-500" />
+          <h2 class="text-sm font-bold uppercase tracking-wider">Historical Shootout Table</h2>
+          <span class="text-[9px] font-black text-[var(--color-text-muted)] bg-white/5 border border-white/5 px-2 py-0.5 rounded font-mono">{{ filteredMetrics.length }} runs listed</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] text-[var(--color-text-muted)] font-black uppercase tracking-widest">{{ isTableCollapsed ? 'Expand' : 'Collapse' }}</span>
+          <ArrowDown :size="14" class="transition-transform duration-300" :class="{ '-rotate-180': !isTableCollapsed }" />
+        </div>
+      </div>
+
+      <div v-show="!isTableCollapsed" class="overflow-x-auto">
         <table class="w-full text-sm text-left border-collapse">
           <thead>
             <tr class="bg-[var(--color-bg-elevated)]/50 border-b border-[var(--color-border-default)] text-[10px] font-black uppercase tracking-[0.15em] text-[var(--color-text-muted)]">
@@ -348,14 +721,18 @@ function formatRunDate(dateStr: string | null): string {
                 </div>
               </td>
               <td class="px-8 py-5">
-                <div class="flex flex-col gap-2">
+                <div class="flex flex-col gap-1.5 py-1">
                   <div class="flex items-center gap-2">
-                    <span class="text-[8px] font-black uppercase text-amber-500/60 tracking-widest w-12">Quick</span>
-                    <span class="text-[10px] font-bold text-white/80 bg-white/5 px-2 py-0.5 rounded border border-white/5">{{ m.quick_model }}</span>
+                    <span class="text-[8px] font-black uppercase text-amber-500/70 tracking-widest w-10">Quick</span>
+                    <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ m.quick_model }}</span>
                   </div>
                   <div class="flex items-center gap-2">
-                    <span class="text-[8px] font-black uppercase text-blue-500/60 tracking-widest w-12">Deep</span>
-                    <span class="text-[10px] font-bold text-white/80 bg-white/5 px-2 py-0.5 rounded border border-white/5">{{ m.deep_model }}</span>
+                    <span class="text-[8px] font-black uppercase text-blue-400/70 tracking-widest w-10">Deep</span>
+                    <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ m.deep_model }}</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="text-[8px] font-black uppercase text-purple-400/70 tracking-widest w-10">Depth</span>
+                    <span class="text-[9px] font-bold text-purple-400/90 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/10 font-mono">{{ m.depth }} Rounds</span>
                   </div>
                 </div>
               </td>
