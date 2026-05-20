@@ -250,6 +250,11 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
             status_callback=status_cb
         )
         logger.info(f"Background analysis complete: {summary}")
+        if summary:
+            if summary.get("aborted"):
+                raise Exception("Analysis stopped/aborted by user.")
+            if summary.get("failed", 0) > 0:
+                raise Exception(f"Analysis completed with {summary['failed']} failed runs.")
     except Exception as e:
         import traceback
         err_msg = f"Analysis Failed: {str(e)}\n{traceback.format_exc()}"

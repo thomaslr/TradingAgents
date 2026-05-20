@@ -678,7 +678,7 @@ class RunRegistry:
         now = _now_iso()
         if status == "running":
             self.conn.execute(
-                "UPDATE research_queue SET status = ?, started_at = ? WHERE id = ?",
+                "UPDATE research_queue SET status = ?, started_at = ?, error = NULL WHERE id = ?",
                 (status, now, job_id)
             )
         elif status in ("completed", "failed"):
@@ -688,7 +688,7 @@ class RunRegistry:
             )
         else:
             self.conn.execute(
-                "UPDATE research_queue SET status = ? WHERE id = ?",
+                "UPDATE research_queue SET status = ?, error = NULL WHERE id = ?",
                 (status, job_id)
             )
         self.conn.commit()

@@ -1147,7 +1147,7 @@ function formatDate(dateStr: string | null): string {
                 <div v-if="job.id !== runningJob?.id" class="flex items-center gap-2">
                   <!-- Pause/Play Individual Job -->
                   <button 
-                    v-if="job.status === 'paused'"
+                    v-if="job.status === 'paused' || job.status === 'failed'"
                     @click="handleJobResume(job.id)"
                     class="p-2 hover:bg-white/10 rounded-lg transition-colors group/btn"
                     title="Release / Resume Job"
