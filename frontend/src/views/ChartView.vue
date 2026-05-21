@@ -4,6 +4,7 @@ import { createChart, type IChartApi, type ISeriesApi, ColorType, CandlestickSer
 import { fetchOHLC, fetchRuns, fetchTickers, fetchConfigs, type Run, type VolumeItem, type SimulationConfig } from '../api/client'
 import { ArrowLeft, RefreshCw, Clock } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
+import { selectedTickers, activeTicker, setActiveTicker } from '../store'
 
 const props = defineProps<{ ticker?: string }>()
 const router = useRouter()
@@ -27,7 +28,30 @@ const error = ref('')
 const period = ref(localStorage.getItem('chart_period') || '3mo')
 const dateFrom = ref(localStorage.getItem('chart_from') || '')
 const dateTo = ref(localStorage.getItem('chart_to') || '')
-const tickerInput = ref(props.ticker || localStorage.getItem('chart_ticker') || '')
+if (props.ticker) {
+  setActiveTicker(props.ticker)
+}
+
+const tickerInput = ref(activeTicker.value)
+
+watch(activeTicker, (v) => {
+  if (v) {
+    tickerInput.value = v
+    if (v !== props.ticker) {
+      router.replace({ name: 'chart', params: { ticker: v } })
+    }
+  }
+})
+
+watch(() => props.ticker, (newTicker) => {
+  if (newTicker && newTicker !== activeTicker.value) {
+    setActiveTicker(newTicker)
+  }
+})
+
+watch(activeTicker, () => {
+  loadChart()
+})
 const availableTickers = ref<any[]>([])
 const runs = ref<Run[]>([])
 const configs = ref<SimulationConfig[]>([])
@@ -39,7 +63,7 @@ const showHold = ref(false)
 watch(period, (v) => localStorage.setItem('chart_period', v))
 watch(dateFrom, (v) => localStorage.setItem('chart_from', v))
 watch(dateTo, (v) => localStorage.setItem('chart_to', v))
-watch(tickerInput, (v) => localStorage.setItem('chart_ticker', v))
+
 watch(showBuy, (v) => localStorage.setItem('chart_show_buy', String(v)))
 watch(showSell, (v) => localStorage.setItem('chart_show_sell', String(v)))
 watch(showHold, (v) => localStorage.setItem('chart_show_hold', String(v)))
@@ -109,12 +133,16 @@ async function loadTickers() {
     availableTickers.value = await fetchTickers()
     
     if (!tickerInput.value && availableTickers.value.length > 0) {
-      tickerInput.value = availableTickers.value[0].ticker
-      router.replace({ name: 'chart', params: { ticker: tickerInput.value } })
-    } else if (tickerInput.value && !availableTickers.value.find(t => t.ticker === tickerInput.value)) {
-      // If the current ticker isn't in the list, add a placeholder
-      availableTickers.value.push({ ticker: tickerInput.value, name: tickerInput.value })
-      availableTickers.value.sort((a, b) => a.ticker.localeCompare(b.ticker))
+      const defaultTicker = availableTickers.value[0].ticker
+      setActiveTicker(defaultTicker)
+      router.replace({ name: 'chart', params: { ticker: defaultTicker } })
+    } else if (tickerInput.value) {
+      setActiveTicker(tickerInput.value)
+      if (!availableTickers.value.find(t => t.ticker === tickerInput.value)) {
+        // If the current ticker isn't in the list, add a placeholder
+        availableTickers.value.push({ ticker: tickerInput.value, name: tickerInput.value })
+        availableTickers.value.sort((a, b) => a.ticker.localeCompare(b.ticker))
+      }
     }
   } catch (e) {
     console.error("Failed to load tickers", e)
@@ -295,7 +323,7 @@ async function loadChart() {
 function changeTicker() {
   const t = tickerInput.value.trim().toUpperCase()
   if (t) {
-    tickerInput.value = t
+    setActiveTicker(t)
     router.replace({ name: 'chart', params: { ticker: t } })
     loadChart()
   }
@@ -374,6 +402,22 @@ watch([dateFrom, dateTo], ([f, t]) => {
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Quick Select Tickers -->
+    <div v-if="selectedTickers.length > 0" class="flex flex-wrap gap-2 mb-6 items-center">
+      <span class="text-xs font-black uppercase text-[var(--color-text-muted)] mr-2">Quick Select:</span>
+      <button
+        v-for="ticker in selectedTickers"
+        :key="ticker"
+        @click="setActiveTicker(ticker); router.replace({ name: 'chart', params: { ticker } })"
+        class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all border"
+        :class="activeTicker === ticker
+          ? 'bg-[var(--color-accent-primary)] text-white border-[var(--color-accent-primary)] shadow-sm shadow-[var(--color-accent-primary)]/20'
+          : 'bg-[var(--color-bg-card)] text-[var(--color-text-muted)] border-[var(--color-border-default)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]'"
+      >
+        {{ ticker }}
+      </button>
     </div>
 
     <!-- Chart -->

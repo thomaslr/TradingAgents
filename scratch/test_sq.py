@@ -1,0 +1,1 @@
+print('Single quotes work!')

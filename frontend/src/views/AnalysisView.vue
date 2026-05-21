@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { selectedTickers } from '../store'
 import { 
   fetchAnalysisStatus, 
   fetchConfig, 
@@ -111,7 +112,31 @@ const inputTokensPerSec = ref(0)
 const outputTokensPerSec = ref(0)
 
 // Form State
-const tickersInput = ref(localStorage.getItem('trading_tickers') || '')
+const tickersInput = ref(selectedTickers.value.join(', '))
+
+watch(
+  selectedTickers,
+  (newVal) => {
+    const currentInputParsed = tickersInput.value
+      .split(',')
+      .map(t => t.trim().toUpperCase())
+      .filter(t => t)
+    if (JSON.stringify(currentInputParsed) !== JSON.stringify(newVal)) {
+      tickersInput.value = newVal.join(', ')
+    }
+  },
+  { deep: true }
+)
+
+watch(tickersInput, (newVal) => {
+  const parsed = newVal
+    .split(',')
+    .map(t => t.trim().toUpperCase())
+    .filter(t => t)
+  if (JSON.stringify(selectedTickers.value) !== JSON.stringify(parsed)) {
+    selectedTickers.value = parsed
+  }
+})
 const provider = ref(localStorage.getItem('trading_provider') || 'openai')
 const quickModel = ref(localStorage.getItem('trading_quick_model') || '')
 const deepModel = ref(localStorage.getItem('trading_deep_model') || '')
@@ -125,7 +150,7 @@ const force = ref(localStorage.getItem('trading_force') === 'true')
 const depth = ref(Number(localStorage.getItem('trading_depth')) || 1)
 
 // Persist Form State to localStorage
-watch(tickersInput, (v) => localStorage.setItem('trading_tickers', v))
+
 watch(provider, (v) => localStorage.setItem('trading_provider', v))
 watch(quickModel, (v) => localStorage.setItem('trading_quick_model', v))
 watch(deepModel, (v) => localStorage.setItem('trading_deep_model', v))
