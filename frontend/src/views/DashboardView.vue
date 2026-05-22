@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchRuns, deleteRuns, deleteRun, fetchConfigs, type Run, type SimulationConfig } from '../api/client'
-import { TrendingUp, TrendingDown, Minus, Clock, CheckCircle, XCircle, Eye, Trash2, RefreshCw, Search, ArrowDown, ArrowUp, Filter } from 'lucide-vue-next'
+import { fetchRuns, deleteRuns, deleteRun, type Run } from '../api/client'
+import { TrendingUp, TrendingDown, Minus, Clock, CheckCircle, XCircle, Eye, Trash2, RefreshCw, Search, ArrowDown, ArrowUp } from 'lucide-vue-next'
+import ConfigFilterPanel from '../components/ConfigFilterPanel.vue'
+import ConfigDisplay from '../components/ConfigDisplay.vue'
+import { activeTicker, setActiveTicker, activeDate, loadConfigs, enabledConfigs, configs } from '../store'
 
 const router = useRouter()
 const runs = ref<Run[]>([])
@@ -17,78 +20,7 @@ const sortColumn = ref<keyof Run | 'completed_at'>((localStorage.getItem('dash_s
 const sortDirection = ref<'asc' | 'desc'>((localStorage.getItem('dash_sort_dir') as any) || 'desc')
 const selectedRuns = ref<Set<number>>(new Set())
 
-// Unified simulation configs selection state
-const configs = ref<SimulationConfig[]>([])
-const enabledConfigs = ref<Set<string>>(new Set())
-const configsSearchQuery = ref('')
 
-function safeConfigColor(c: SimulationConfig): string {
-  const color = c.color || '#10b981'
-  const lower = color.toLowerCase().trim()
-  if (lower === '#ffffff' || lower === '#fff' || lower === 'white' || lower === 'rgb(255,255,255)' || lower === 'rgba(255,255,255,1)') {
-    return '#10b981'
-  }
-  return color
-}
-
-const filteredConfigs = computed(() => {
-  if (!configsSearchQuery.value) return configs.value
-  const q = configsSearchQuery.value.toLowerCase()
-  return configs.value.filter(c => c.label.toLowerCase().includes(q))
-})
-
-function loadSharedConfigs() {
-  try {
-    const saved = localStorage.getItem('shared_enabled_configs')
-    if (saved) {
-      const parsed = JSON.parse(saved)
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        enabledConfigs.value = new Set(parsed)
-        return
-      }
-    }
-  } catch (e) {
-    console.error('Failed to parse shared configs', e)
-  }
-  // Default: enable all configs if nothing is saved or if it is empty
-  enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
-}
-
-function toggleConfig(configId: string) {
-  const s = new Set(enabledConfigs.value)
-  if (s.has(configId)) {
-    s.delete(configId)
-  } else {
-    s.add(configId)
-  }
-  enabledConfigs.value = s
-  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(s)))
-}
-
-function selectAllConfigs() {
-  enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
-  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(enabledConfigs.value)))
-}
-
-function clearAllConfigs() {
-  enabledConfigs.value = new Set()
-  localStorage.setItem('shared_enabled_configs', JSON.stringify([]))
-}
-
-function handleStorageEvent(event: StorageEvent) {
-  if (event.key === 'shared_enabled_configs') {
-    loadSharedConfigs()
-  }
-}
-
-async function loadConfigs() {
-  try {
-    configs.value = await fetchConfigs()
-    loadSharedConfigs()
-  } catch (e) {
-    console.error('Failed to load configs', e)
-  }
-}
 
 watch(searchQuery, (v) => localStorage.setItem('dash_search', v))
 watch(startDate, (v) => localStorage.setItem('dash_start', v))
@@ -115,7 +47,6 @@ let refreshInterval: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
   await Promise.all([loadRuns(), loadConfigs()])
-  window.addEventListener('storage', handleStorageEvent)
   refreshInterval = setInterval(() => {
     if (runs.value.some(r => r.status === 'running' || r.status === 'pending')) {
       loadRuns(true)
@@ -125,7 +56,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (refreshInterval) clearInterval(refreshInterval)
-  window.removeEventListener('storage', handleStorageEvent)
 })
 
 async function loadRuns(silent = false) {
@@ -154,6 +84,11 @@ const sellSignals = computed(() => completedRuns.value.filter(r => r.action === 
 // Computed Processed Runs
 const processedRuns = computed(() => {
   let result = runs.value
+
+  // Ticker filter (Top sticky control bar)
+  if (activeTicker.value) {
+    result = result.filter(r => r.ticker === activeTicker.value)
+  }
 
   // Search filter
   if (searchQuery.value) {
@@ -310,10 +245,13 @@ function getStatusColor(status: string): string {
 }
 
 function viewReport(run: Run) {
+  setActiveTicker(run.ticker)
+  activeDate.value = run.trade_date
   router.push({ name: 'report', params: { ticker: run.ticker, date: run.trade_date } })
 }
 
 function viewChart(run: Run) {
+  setActiveTicker(run.ticker)
   router.push({ name: 'chart', params: { ticker: run.ticker } })
 }
 
@@ -430,64 +368,9 @@ function formatDate(dateStr: string | null): string {
       </div>
     </div>
 
-    <!-- Simulation Configs Filter Panel -->
-    <div v-if="configs.length > 0" class="bg-white/5 p-4 rounded-xl border border-white/10 mb-6 flex flex-col gap-3 shadow-lg">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-white/5 pb-3">
-        <div class="flex items-center gap-2">
-          <Filter :size="14" class="text-[var(--color-accent-primary)] opacity-80" />
-          <span class="text-xs uppercase font-black tracking-widest text-white">Isolate Simulation Configs</span>
-          <span class="text-[10px] text-[var(--color-text-muted)] font-mono">({{ enabledConfigs.size }} / {{ configs.length }} active)</span>
-        </div>
-        
-        <!-- Controls & Search Bar -->
-        <div class="flex flex-wrap items-center gap-2">
-          <!-- Small Autocomplete/Search input -->
-          <div class="relative w-44">
-            <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40" :size="12" />
-            <input 
-              v-model="configsSearchQuery"
-              type="text" 
-              placeholder="Search configs..." 
-              class="w-full pl-7 pr-2.5 py-1 bg-white/5 border border-white/10 rounded-lg text-[10px] focus:outline-none focus:border-[var(--color-accent-primary)] text-white font-medium bg-[#0f172a]"
-            />
-          </div>
-          
-          <button 
-            @click="selectAllConfigs" 
-            class="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-[9px] font-black uppercase tracking-wider text-white transition-colors"
-          >
-            Select All
-          </button>
-          <button 
-            @click="clearAllConfigs" 
-            class="px-2.5 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-[9px] font-black uppercase tracking-wider text-red-400 transition-colors"
-          >
-            Clear All
-          </button>
-        </div>
-      </div>
 
-      <!-- Config Buttons list: capped height with premium scrolling -->
-      <div class="max-h-24 overflow-y-auto pr-1 custom-scrollbar">
-        <div class="flex flex-wrap gap-2 py-0.5">
-          <button
-            v-for="c in filteredConfigs"
-            :key="c.config_id"
-            @click="toggleConfig(c.config_id)"
-            class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all select-none"
-            :class="enabledConfigs.has(c.config_id)
-              ? 'border-white/20 bg-white/10 text-white shadow-sm'
-              : 'border-white/5 bg-white/[0.02] text-[var(--color-text-muted)] opacity-40'"
-          >
-            <div class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: safeConfigColor(c) }"></div>
-            <span>{{ c.label }}</span>
-          </button>
-          <div v-if="filteredConfigs.length === 0" class="text-[10px] text-[var(--color-text-muted)] italic py-2 pl-1">
-            No configurations match your search criteria.
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- Simulation Configs Filter Panel -->
+    <ConfigFilterPanel margin-class="mb-6" />
 
     <!-- Recent Runs Table -->
     <div class="rounded-xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] overflow-hidden">
@@ -578,21 +461,11 @@ function formatDate(dateStr: string | null): string {
               <td class="px-5 py-4 font-semibold">{{ run.ticker }}</td>
               <td class="px-5 py-4 text-[var(--color-text-secondary)]">{{ run.trade_date }}</td>
               <td class="px-5 py-4">
-                <div v-if="run.quick_model || run.deep_model" class="flex flex-col gap-1.5 py-1">
-                  <div class="flex items-center gap-2">
-                    <span class="text-[8px] font-black uppercase text-amber-500/70 tracking-widest w-10">Quick</span>
-                    <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ run.quick_model }}</span>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <span class="text-[8px] font-black uppercase text-blue-400/70 tracking-widest w-10">Deep</span>
-                    <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ run.deep_model }}</span>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <span class="text-[8px] font-black uppercase text-purple-400/70 tracking-widest w-10">Depth</span>
-                    <span class="text-[9px] font-bold text-purple-400/90 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/10 font-mono">{{ run.depth }} Rounds</span>
-                  </div>
-                </div>
-                <div v-else class="text-[var(--color-text-muted)] text-xs font-mono">—</div>
+                <ConfigDisplay
+                  :quick-model="run.quick_model"
+                  :deep-model="run.deep_model"
+                  :depth="run.depth"
+                />
               </td>
               <td class="px-5 py-4 font-medium" :class="getRatingColor(run.rating)">
                 {{ run.rating || '—' }}
@@ -671,17 +544,13 @@ function formatDate(dateStr: string | null): string {
             <span v-if="run.close_price" class="font-mono">${{ run.close_price.toFixed(2) }}</span>
           </div>
           <!-- Mobile config layout -->
-          <div v-if="run.quick_model || run.deep_model" class="pl-7 mt-2 flex flex-col gap-1 text-[10px]">
-            <div class="flex items-center gap-1.5">
-              <span class="text-[8px] font-black uppercase text-amber-500/70 tracking-widest">Q:</span>
-              <span class="text-[9px] font-bold text-white/80 bg-white/5 px-1.5 py-0.2 rounded border border-white/5 font-mono">{{ run.quick_model }}</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <span class="text-[8px] font-black uppercase text-blue-400/70 tracking-widest">D:</span>
-              <span class="text-[9px] font-bold text-white/80 bg-white/5 px-1.5 py-0.2 rounded border border-white/5 font-mono">{{ run.deep_model }}</span>
-              <span class="text-[8px] text-purple-400/80 bg-purple-500/10 border border-purple-500/10 px-1 py-0.2 rounded font-mono ml-1">{{ run.depth }} Rnd</span>
-            </div>
-          </div>
+          <ConfigDisplay
+            :quick-model="run.quick_model"
+            :deep-model="run.deep_model"
+            :depth="run.depth"
+            compact
+            class="pl-7 mt-2"
+          />
         </div>
       </div>
     </div>

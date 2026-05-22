@@ -706,41 +706,45 @@ class RunRegistry:
         return None
 
 
-    def list_metrics(self, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_metrics(self, ticker: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
         """List historical analysis metrics, sorted by most recent completed run."""
+        query = """
+            SELECT 
+                COALESCE(m.id, r.id) AS id,
+                m.id AS metrics_id,
+                r.id AS run_id,
+                r.ticker,
+                r.trade_date,
+                r.quick_model,
+                r.deep_model,
+                r.depth,
+                COALESCE(m.market_sec, 0) AS market_sec,
+                COALESCE(m.social_sec, 0) AS social_sec,
+                COALESCE(m.news_sec, 0) AS news_sec,
+                COALESCE(m.fund_sec, 0) AS fund_sec,
+                COALESCE(m.debate_sec, 0) AS debate_sec,
+                COALESCE(m.decision_sec, 0) AS decision_sec,
+                COALESCE(m.total_sec, r.runtime_sec, 0) AS total_sec,
+                COALESCE(m.input_tokens, 0) AS input_tokens,
+                COALESCE(m.output_tokens, 0) AS output_tokens,
+                COALESCE(m.avg_tps, 0) AS avg_tps,
+                COALESCE(m.created_at, r.completed_at) AS created_at
+            FROM runs r
+            LEFT JOIN analysis_metrics m ON r.id = m.run_id
+            WHERE r.status = 'completed'
+        """
+        params = []
+        if ticker:
+            query += " AND r.ticker = ?"
+            params.append(ticker)
+            
+        query += " ORDER BY r.completed_at DESC LIMIT ?"
+        params.append(limit)
+
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT 
-                    COALESCE(m.id, r.id) AS id,
-                    m.id AS metrics_id,
-                    r.id AS run_id,
-                    r.ticker,
-                    r.trade_date,
-                    r.quick_model,
-                    r.deep_model,
-                    r.depth,
-                    COALESCE(m.market_sec, 0) AS market_sec,
-                    COALESCE(m.social_sec, 0) AS social_sec,
-                    COALESCE(m.news_sec, 0) AS news_sec,
-                    COALESCE(m.fund_sec, 0) AS fund_sec,
-                    COALESCE(m.debate_sec, 0) AS debate_sec,
-                    COALESCE(m.decision_sec, 0) AS decision_sec,
-                    COALESCE(m.total_sec, r.runtime_sec, 0) AS total_sec,
-                    COALESCE(m.input_tokens, 0) AS input_tokens,
-                    COALESCE(m.output_tokens, 0) AS output_tokens,
-                    COALESCE(m.avg_tps, 0) AS avg_tps,
-                    COALESCE(m.created_at, r.completed_at) AS created_at
-                FROM runs r
-                LEFT JOIN analysis_metrics m ON r.id = m.run_id
-                WHERE r.status = 'completed'
-                ORDER BY r.completed_at DESC
-                LIMIT ?
-                """,
-                (limit,)
-            )
+            cursor.execute(query, tuple(params))
             return [dict(row) for row in cursor.fetchall()]
 
     def get_cached_analyst_report(

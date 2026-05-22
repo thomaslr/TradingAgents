@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { createChart, type IChartApi, type ISeriesApi, ColorType, CandlestickSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts'
-import { fetchOHLC, fetchRuns, fetchTickers, fetchConfigs, type Run, type VolumeItem, type SimulationConfig } from '../api/client'
+import { fetchOHLC, fetchRuns, fetchTickers, type Run, type VolumeItem, type SimulationConfig } from '../api/client'
 import { ArrowLeft, RefreshCw, Clock } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
-import { selectedTickers, activeTicker, setActiveTicker } from '../store'
+import { activeTicker, setActiveTicker, configs, enabledConfigs, toggleConfig, loadConfigs } from '../store'
 
 const props = defineProps<{ ticker?: string }>()
 const router = useRouter()
@@ -54,8 +54,6 @@ watch(activeTicker, () => {
 })
 const availableTickers = ref<any[]>([])
 const runs = ref<Run[]>([])
-const configs = ref<SimulationConfig[]>([])
-const enabledConfigs = ref<Set<string>>(new Set())
 const showBuy = ref(true)
 const showSell = ref(true)
 const showHold = ref(false)
@@ -78,55 +76,16 @@ const periods = [
   { label: '5Y', value: '5y' },
 ]
 
-function loadSharedConfigs() {
-  try {
-    const saved = localStorage.getItem('shared_enabled_configs')
-    if (saved) {
-      const parsed = JSON.parse(saved)
-      if (Array.isArray(parsed)) {
-        enabledConfigs.value = new Set(parsed)
-        return
-      }
-    }
-  } catch (e) {
-    console.error('Failed to parse shared configs', e)
-  }
-  // Default: empty (all off by default on charts view as requested)
-  enabledConfigs.value = new Set()
-}
-
-function handleStorageEvent(event: StorageEvent) {
-  if (event.key === 'shared_enabled_configs') {
-    loadSharedConfigs()
-    loadChart()
-  }
-}
+watch(enabledConfigs, () => {
+  loadChart()
+}, { deep: true })
 
 onMounted(async () => {
   await Promise.all([loadTickers(), loadConfigs()])
-  window.addEventListener('storage', handleStorageEvent)
   if (tickerInput.value) {
     await loadChart()
   }
 })
-
-async function loadConfigs() {
-  try {
-    configs.value = await fetchConfigs()
-    loadSharedConfigs()
-  } catch (e) {
-    console.error('Failed to load configs', e)
-  }
-}
-
-function toggleConfig(configId: string) {
-  const s = new Set(enabledConfigs.value)
-  if (s.has(configId)) s.delete(configId)
-  else s.add(configId)
-  enabledConfigs.value = s
-  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(s)))
-  loadChart()
-}
 
 async function loadTickers() {
   try {
@@ -150,7 +109,6 @@ async function loadTickers() {
 }
 
 onBeforeUnmount(() => {
-  window.removeEventListener('storage', handleStorageEvent)
   if (chart) {
     chart.remove()
     chart = null
@@ -404,21 +362,6 @@ watch([dateFrom, dateTo], ([f, t]) => {
       </div>
     </div>
 
-    <!-- Quick Select Tickers -->
-    <div v-if="selectedTickers.length > 0" class="flex flex-wrap gap-2 mb-6 items-center">
-      <span class="text-xs font-black uppercase text-[var(--color-text-muted)] mr-2">Quick Select:</span>
-      <button
-        v-for="ticker in selectedTickers"
-        :key="ticker"
-        @click="setActiveTicker(ticker); router.replace({ name: 'chart', params: { ticker } })"
-        class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all border"
-        :class="activeTicker === ticker
-          ? 'bg-[var(--color-accent-primary)] text-white border-[var(--color-accent-primary)] shadow-sm shadow-[var(--color-accent-primary)]/20'
-          : 'bg-[var(--color-bg-card)] text-[var(--color-text-muted)] border-[var(--color-border-default)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]'"
-      >
-        {{ ticker }}
-      </button>
-    </div>
 
     <!-- Chart -->
     <div class="relative rounded-xl bg-[var(--color-bg-card)] border border-[var(--color-border-default)] overflow-hidden">

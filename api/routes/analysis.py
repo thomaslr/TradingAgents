@@ -414,8 +414,7 @@ def resume_research_queue(background_tasks: BackgroundTasks, registry: RunRegist
 
 @router.post("/batch")
 def start_batch_analysis(request: AnalysisRequest, background_tasks: BackgroundTasks, config: dict = Depends(get_config), registry: RunRegistry = Depends(get_registry)):
-    if task_state.is_running():
-        raise HTTPException(status_code=400, detail="Job already running.")
+    is_running = task_state.is_running()
     
     import uuid
     job_id = request.id or str(uuid.uuid4())
@@ -431,10 +430,18 @@ def start_batch_analysis(request: AnalysisRequest, background_tasks: BackgroundT
         "status": "pending"
     }
     
-    registry.add_to_queue(job_data, priority=True)
+    # If the GPU/task is busy, redirect to the back of the queue (priority=False).
+    # Otherwise, prioritize the request (priority=True).
+    priority = not is_running
+    registry.add_to_queue(job_data, priority=priority)
     task_state.is_paused = False
     start_worker_if_needed(background_tasks, registry.db_path, config)
-    return {"status": "accepted", "id": job_id}
+    return {
+        "status": "accepted",
+        "id": job_id,
+        "queued": is_running,
+        "message": "Job added to the back of the queue." if is_running else "Analysis started."
+    }
 
 @router.get("/status")
 def get_analysis_status(background_tasks: BackgroundTasks, registry: RunRegistry = Depends(get_registry), config: dict = Depends(get_config)):

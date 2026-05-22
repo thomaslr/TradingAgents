@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
-import { fetchPerformanceData, fetchConfigs, clearMemoryEntries, fetchTickers, type PerformanceEntry, type SimulationConfig, type MemoryEntry } from '../api/client'
+import { ref, onMounted, computed, watch, onBeforeUnmount } from 'vue'
+import { fetchPerformanceData, clearMemoryEntries, fetchTickers, type PerformanceEntry, type SimulationConfig, type MemoryEntry } from '../api/client'
 import { createChart, ColorType, LineSeries, LineStyle } from 'lightweight-charts'
-import { Trophy, RefreshCw, Info, Filter, BarChart3, Trash2, Search } from 'lucide-vue-next'
-import { selectedTickers, activeTicker, setActiveTicker } from '../store'
+import { Trophy, RefreshCw, Info, BarChart3, Trash2 } from 'lucide-vue-next'
+import { activeTicker, configs, enabledConfigs, loadConfigs, toggleConfig } from '../store'
+import ConfigFilterPanel from '../components/ConfigFilterPanel.vue'
+import ConfigDisplay from '../components/ConfigDisplay.vue'
 
 const loading = ref(true)
 const rawDbEntries = ref<PerformanceEntry[]>([])
-const configs = ref<SimulationConfig[]>([])
-const enabledConfigs = ref<Set<string>>(new Set())
-const configsSearchQuery = ref('')
 const chartContainer = ref<HTMLDivElement>()
 let chart: any = null
 let benchmarkSeries: any = null
@@ -50,19 +49,6 @@ const entries = computed<MemoryEntry[]>(() => {
 // Filters
 const showCosts = ref(false)
 const commissionPerTrade = ref(0.001) // 0.1% default simulation cost
-const selectedTicker = ref(activeTicker.value || 'ALL')
-
-watch(activeTicker, (v) => {
-  if (v) {
-    selectedTicker.value = v
-  }
-})
-
-watch(selectedTicker, (v) => {
-  if (v && v !== 'ALL') {
-    setActiveTicker(v)
-  }
-})
 const benchmarkType = ref<'SPY' | 'ASSET'>((localStorage.getItem('perf_benchmark') as any) || 'ASSET')
 const strategySource = ref<'RATING' | 'ACTION'>((localStorage.getItem('perf_source') as any) || 'RATING')
 const costModel = ref<'FLAT' | 'IBKR'>('FLAT')
@@ -93,59 +79,20 @@ const expandedRows = ref<Set<string>>(new Set())
 
 
 
-const filteredConfigs = computed(() => {
-  if (!configsSearchQuery.value) return configs.value
-  const q = configsSearchQuery.value.toLowerCase()
-  return configs.value.filter(c => c.label.toLowerCase().includes(q))
-})
-
-function loadSharedConfigs() {
-  try {
-    const saved = localStorage.getItem('shared_enabled_configs')
-    if (saved) {
-      const parsed = JSON.parse(saved)
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        enabledConfigs.value = new Set(parsed)
-        return
-      }
-    }
-  } catch (e) {
-    console.error('Failed to parse shared configs', e)
-  }
-  enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
-}
-
-function selectAllConfigs() {
-  enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
-  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(enabledConfigs.value)))
-  if (chart) initChart()
-}
-
-function clearAllConfigs() {
-  enabledConfigs.value = new Set()
-  localStorage.setItem('shared_enabled_configs', JSON.stringify([]))
-  if (chart) initChart()
-}
-
-function handleStorageEvent(event: StorageEvent) {
-  if (event.key === 'shared_enabled_configs') {
-    loadSharedConfigs()
-    if (chart) initChart()
-  }
-}
-
 onMounted(async () => {
   await Promise.all([
     loadData(),
     loadRegistryTickers(),
     loadConfigs()
   ])
-  window.addEventListener('storage', handleStorageEvent)
   initChart()
 })
 
-onUnmounted(() => {
-  window.removeEventListener('storage', handleStorageEvent)
+onBeforeUnmount(() => {
+  if (chart) {
+    chart.remove()
+    chart = null
+  }
 })
 
 async function loadRegistryTickers() {
@@ -154,24 +101,6 @@ async function loadRegistryTickers() {
   } catch (e) {
     console.error('Failed to load registry tickers', e)
   }
-}
-
-async function loadConfigs() {
-  try {
-    configs.value = await fetchConfigs()
-    loadSharedConfigs()
-  } catch (e) {
-    console.error('Failed to load configs', e)
-  }
-}
-
-function toggleConfig(configId: string) {
-  const s = new Set(enabledConfigs.value)
-  if (s.has(configId)) s.delete(configId)
-  else s.add(configId)
-  enabledConfigs.value = s
-  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(s)))
-  if (chart) initChart()
 }
 
 async function loadData() {
@@ -203,13 +132,6 @@ async function handleClearMemory() {
 }
 
 
-const availableTickers = computed(() => {
-  const dbTickers = rawDbEntries.value.map(e => e.ticker)
-  const regTickers = registryTickers.value.map(t => t.ticker)
-  const all = new Set([...dbTickers, ...regTickers])
-  return ['ALL', ...Array.from(all).sort()]
-})
-
 function parsePct(val: string | null): number {
   if (!val) return 0
   const parsed = parseFloat(val.replace('%', ''))
@@ -221,8 +143,8 @@ const filteredEntries = computed(() => {
   let result = entries.value
   
   // Apply Ticker Filter
-  if (selectedTicker.value !== 'ALL') {
-    result = result.filter(e => e.ticker === selectedTicker.value)
+  if (activeTicker.value) {
+    result = result.filter(e => e.ticker === activeTicker.value)
   }
   
   // Apply Time Range Filter
@@ -578,6 +500,11 @@ const performanceData = computed(() => {
 function initChart() {
   if (!chartContainer.value) return
   
+  if (chart) {
+    chart.remove()
+    chart = null
+  }
+  
   chart = createChart(chartContainer.value, {
     layout: {
       background: { type: ColorType.Solid, color: 'transparent' },
@@ -749,13 +676,6 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
       <div class="flex flex-col items-end gap-3">
         <!-- Row 1: Primary Filters -->
         <div class="flex flex-wrap items-center justify-end gap-3">
-          <!-- Ticker Filter -->
-          <div class="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
-            <Filter :size="14" class="text-[var(--color-text-muted)]" />
-            <select v-model="selectedTicker" class="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer">
-              <option v-for="t in availableTickers" :key="t" :value="t">{{ t }}</option>
-            </select>
-          </div>
 
           <!-- Time Range -->
           <div class="flex items-center gap-4 bg-[var(--color-bg-elevated)] p-1.5 rounded-xl border border-[var(--color-border-default)]">
@@ -896,89 +816,9 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
       </div>
     </div>
 
-    <!-- Quick Select Tickers -->
-    <div class="flex flex-wrap gap-2 items-center bg-[var(--color-bg-card)] border border-[var(--color-border-default)] p-3 rounded-xl shadow-sm">
-      <span class="text-xs font-black uppercase text-[var(--color-text-muted)] mr-2">Quick Select:</span>
-      <button
-        @click="selectedTicker = 'ALL'"
-        class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all border"
-        :class="selectedTicker === 'ALL'
-          ? 'bg-[var(--color-accent-primary)] text-white border-[var(--color-accent-primary)] shadow-sm shadow-[var(--color-accent-primary)]/20'
-          : 'bg-[var(--color-bg-elevated)] text-[var(--color-text-muted)] border-[var(--color-border-default)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]'"
-      >
-        ALL
-      </button>
-      <button
-        v-for="ticker in selectedTickers"
-        :key="ticker"
-        @click="selectedTicker = ticker"
-        class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all border"
-        :class="selectedTicker === ticker
-          ? 'bg-[var(--color-accent-primary)] text-white border-[var(--color-accent-primary)] shadow-sm shadow-[var(--color-accent-primary)]/20'
-          : 'bg-[var(--color-bg-elevated)] text-[var(--color-text-muted)] border-[var(--color-border-default)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]'"
-      >
-        {{ ticker }}
-      </button>
-    </div>
 
       <!-- Simulation Configs Filter Panel -->
-      <div v-if="configs.length > 0" class="bg-white/5 p-4 rounded-xl border border-white/10 mt-4 flex flex-col gap-3 shadow-lg">
-        <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-white/5 pb-3">
-          <div class="flex items-center gap-2">
-            <Filter :size="14" class="text-[var(--color-accent-primary)] opacity-80" />
-            <span class="text-xs uppercase font-black tracking-widest text-white">Isolate Simulation Configs</span>
-            <span class="text-[10px] text-[var(--color-text-muted)] font-mono">({{ enabledConfigs.size }} / {{ configs.length }} active)</span>
-          </div>
-          
-          <!-- Controls & Search Bar -->
-          <div class="flex flex-wrap items-center gap-2">
-            <!-- Small Autocomplete/Search input -->
-            <div class="relative w-44">
-              <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40" :size="12" />
-              <input 
-                v-model="configsSearchQuery"
-                type="text" 
-                placeholder="Search configs..." 
-                class="w-full pl-7 pr-2.5 py-1 bg-white/5 border border-white/10 rounded-lg text-[10px] focus:outline-none focus:border-[var(--color-accent-primary)] text-white font-medium bg-[#0f172a]"
-              />
-            </div>
-            
-            <button 
-              @click="selectAllConfigs" 
-              class="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-[9px] font-black uppercase tracking-wider text-white transition-colors"
-            >
-              Select All
-            </button>
-            <button 
-              @click="clearAllConfigs" 
-              class="px-2.5 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-[9px] font-black uppercase tracking-wider text-red-400 transition-colors"
-            >
-              Clear All
-            </button>
-          </div>
-        </div>
-
-        <!-- Config Buttons list: capped height with premium scrolling -->
-        <div class="max-h-24 overflow-y-auto pr-1 custom-scrollbar">
-          <div class="flex flex-wrap gap-2 py-0.5">
-            <button
-              v-for="c in filteredConfigs"
-              :key="c.config_id"
-              @click="toggleConfig(c.config_id)"
-              class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all select-none"
-              :class="enabledConfigs.has(c.config_id)
-                ? 'border-white/20 bg-white/10 text-white shadow-sm'
-                : 'border-white/5 bg-white/[0.02] text-[var(--color-text-muted)] opacity-40'"
-            >
-              <div class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: safeConfigColor(c) }"></div>
-              <span>{{ c.label }}</span>
-            </button>
-            <div v-if="filteredConfigs.length === 0" class="text-[10px] text-[var(--color-text-muted)] italic py-2 pl-1">
-              No configurations match your search criteria.
-            </div>
-          </div>
-        </div>
-      </div>
+      <ConfigFilterPanel margin-class="mt-4" />
     <div class="space-y-4">
       <div v-for="s in multiConfigStats" :key="s.config.config_id" 
            class="glass p-4 rounded-2xl border border-[var(--color-border-default)] transition-all hover:border-white/20"
@@ -1189,19 +1029,13 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
                 <td class="px-6 py-4 font-bold">{{ entry.ticker }}</td>
                 <td class="px-6 py-4">
                   <div class="flex flex-col gap-1.5 py-1">
-                    <div class="flex items-center gap-2">
-                      <span class="text-[8px] font-black uppercase text-amber-500/70 tracking-widest w-10">Quick</span>
-                      <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ entry.quick_model }}</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <span class="text-[8px] font-black uppercase text-blue-400/70 tracking-widest w-10">Deep</span>
-                      <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ entry.deep_model }}</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <span class="text-[8px] font-black uppercase text-purple-400/70 tracking-widest w-10">Depth</span>
-                      <span class="text-[9px] font-bold text-purple-400/90 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/10 font-mono">{{ entry.depth }} Rounds</span>
-                      
-                      <span class="text-[8px] font-bold px-1.5 py-0.5 rounded border font-mono ml-auto"
+                    <ConfigDisplay
+                      :quick-model="entry.quick_model"
+                      :deep-model="entry.deep_model"
+                      :depth="entry.depth"
+                    />
+                    <div class="flex items-center">
+                      <span class="text-[8px] font-bold px-1.5 py-0.5 rounded border font-mono mt-1"
                             :class="getSignalLabel(entry.rating) === 'BUY' || getSignalLabel(entry.rating) === 'OVERWEIGHT' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/10'
                                   : getSignalLabel(entry.rating) === 'SELL' || getSignalLabel(entry.rating) === 'UNDERWEIGHT' ? 'bg-rose-500/10 text-rose-400 border-rose-500/10'
                                   : 'bg-amber-500/5 text-amber-500/80 border-amber-500/10'">

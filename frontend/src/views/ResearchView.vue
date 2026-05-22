@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
-import { fetchMetrics, fetchCacheStats, clearAnalystCache, fetchConfigs, type AnalysisMetrics, type CacheStats, type SimulationConfig } from '../api/client'
-import { Beaker, Zap, Cpu, BarChart3, RefreshCw, Layers, ArrowUpDown, ArrowUp, ArrowDown, Filter, Search } from 'lucide-vue-next'
+import { ref, onMounted, computed, watch } from 'vue'
+import { fetchMetrics, fetchCacheStats, clearAnalystCache, type AnalysisMetrics, type CacheStats, type SimulationConfig } from '../api/client'
+import { Beaker, Zap, Cpu, BarChart3, RefreshCw, Layers, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-vue-next'
+import { configs, enabledConfigs, loadConfigs, activeTicker } from '../store'
+import ConfigFilterPanel from '../components/ConfigFilterPanel.vue'
+import ConfigDisplay from '../components/ConfigDisplay.vue'
 
 const metrics = ref<AnalysisMetrics[]>([])
 const loading = ref(true)
@@ -16,10 +19,9 @@ const isTableCollapsed = ref(localStorage.getItem('res_table_collapsed') === 'tr
 watch(isAnalyticsCollapsed, (v) => localStorage.setItem('res_analytics_collapsed', String(v)))
 watch(isTableCollapsed, (v) => localStorage.setItem('res_table_collapsed', String(v)))
 
-// Unified configs selection state
-const configs = ref<SimulationConfig[]>([])
-const enabledConfigs = ref<Set<string>>(new Set())
-const configsSearchQuery = ref('')
+watch(activeTicker, () => {
+  loadMetrics()
+})
 
 function safeConfigColor(c: SimulationConfig): string {
   const color = c.color || '#10b981'
@@ -28,64 +30,6 @@ function safeConfigColor(c: SimulationConfig): string {
     return '#10b981'
   }
   return color
-}
-
-const filteredConfigs = computed(() => {
-  if (!configsSearchQuery.value) return configs.value
-  const q = configsSearchQuery.value.toLowerCase()
-  return configs.value.filter(c => c.label.toLowerCase().includes(q))
-})
-
-function loadSharedConfigs() {
-  try {
-    const saved = localStorage.getItem('shared_enabled_configs')
-    if (saved) {
-      const parsed = JSON.parse(saved)
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        enabledConfigs.value = new Set(parsed)
-        return
-      }
-    }
-  } catch (e) {
-    console.error('Failed to parse shared configs', e)
-  }
-  enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
-}
-
-function toggleConfig(configId: string) {
-  const s = new Set(enabledConfigs.value)
-  if (s.has(configId)) {
-    s.delete(configId)
-  } else {
-    s.add(configId)
-  }
-  enabledConfigs.value = s
-  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(s)))
-}
-
-function selectAllConfigs() {
-  enabledConfigs.value = new Set(configs.value.map(c => c.config_id))
-  localStorage.setItem('shared_enabled_configs', JSON.stringify(Array.from(enabledConfigs.value)))
-}
-
-function clearAllConfigs() {
-  enabledConfigs.value = new Set()
-  localStorage.setItem('shared_enabled_configs', JSON.stringify([]))
-}
-
-function handleStorageEvent(event: StorageEvent) {
-  if (event.key === 'shared_enabled_configs') {
-    loadSharedConfigs()
-  }
-}
-
-async function loadConfigs() {
-  try {
-    configs.value = await fetchConfigs()
-    loadSharedConfigs()
-  } catch (e) {
-    console.error('Failed to load configs', e)
-  }
 }
 
 // shootout aggregates
@@ -234,17 +178,12 @@ onMounted(async () => {
     loadCacheStats(),
     loadConfigs()
   ])
-  window.addEventListener('storage', handleStorageEvent)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('storage', handleStorageEvent)
 })
 
 async function loadMetrics() {
   loading.value = true
   try {
-    metrics.value = await fetchMetrics(500)
+    metrics.value = await fetchMetrics(500, activeTicker.value)
   } catch (e) {
     console.error('Failed to load research metrics', e)
   } finally {
@@ -291,7 +230,8 @@ const totalTokens = computed(() => {
 })
 
 const filteredMetrics = computed(() => {
-  let result = metrics.value
+  // Filter by active ticker first
+  let result = metrics.value.filter(m => m.ticker === activeTicker.value)
 
   // Filter by enabled simulation configs
   if (configs.value.length > 0 && enabledConfigs.value.size > 0 && enabledConfigs.value.size < configs.value.length) {
@@ -299,7 +239,7 @@ const filteredMetrics = computed(() => {
       const matched = configs.value.find(c => 
         c.quick_model === m.quick_model &&
         c.deep_model === m.deep_model &&
-        c.depth === m.depth
+        c.depth === Number(m.depth)
       )
       return matched && enabledConfigs.value.has(matched.config_id)
     })
@@ -442,63 +382,7 @@ function formatRunDate(dateStr: string | null): string {
     </div>
 
     <!-- Simulation Configs Filter Panel -->
-    <div v-if="configs.length > 0" class="bg-white/5 p-4 rounded-xl border border-white/10 mb-8 flex flex-col gap-3 shadow-lg">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-white/5 pb-3">
-        <div class="flex items-center gap-2">
-          <Filter :size="14" class="text-[var(--color-accent-primary)] opacity-80" />
-          <span class="text-xs uppercase font-black tracking-widest text-white">Isolate Simulation Configs</span>
-          <span class="text-[10px] text-[var(--color-text-muted)] font-mono">({{ enabledConfigs.size }} / {{ configs.length }} active)</span>
-        </div>
-        
-        <!-- Controls & Search Bar -->
-        <div class="flex flex-wrap items-center gap-2">
-          <!-- Small Autocomplete/Search input -->
-          <div class="relative w-44">
-            <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40" :size="12" />
-            <input 
-              v-model="configsSearchQuery"
-              type="text" 
-              placeholder="Search configs..." 
-              class="w-full pl-7 pr-2.5 py-1 bg-white/5 border border-white/10 rounded-lg text-[10px] focus:outline-none focus:border-[var(--color-accent-primary)] text-white font-medium bg-[#0f172a]"
-            />
-          </div>
-          
-          <button 
-            @click="selectAllConfigs" 
-            class="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-[9px] font-black uppercase tracking-wider text-white transition-colors"
-          >
-            Select All
-          </button>
-          <button 
-            @click="clearAllConfigs" 
-            class="px-2.5 py-1 rounded bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-[9px] font-black uppercase tracking-wider text-red-400 transition-colors"
-          >
-            Clear All
-          </button>
-        </div>
-      </div>
-
-      <!-- Config Buttons list: capped height with premium scrolling -->
-      <div class="max-h-24 overflow-y-auto pr-1 custom-scrollbar">
-        <div class="flex flex-wrap gap-2 py-0.5">
-          <button
-            v-for="c in filteredConfigs"
-            :key="c.config_id"
-            @click="toggleConfig(c.config_id)"
-            class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all select-none"
-            :class="enabledConfigs.has(c.config_id)
-              ? 'border-white/20 bg-white/10 text-white shadow-sm'
-              : 'border-white/5 bg-white/[0.02] text-[var(--color-text-muted)] opacity-40'"
-          >
-            <div class="w-2.5 h-2.5 rounded-full" :style="{ backgroundColor: safeConfigColor(c) }"></div>
-            <span>{{ c.label }}</span>
-          </button>
-          <div v-if="filteredConfigs.length === 0" class="text-[10px] text-[var(--color-text-muted)] italic py-2 pl-1">
-            No configurations match your search criteria.
-          </div>
-        </div>
-      </div>
-    </div>
+    <ConfigFilterPanel margin-class="mb-8" />
 
     <!-- Analytics Section (Collapsable) -->
     <div v-if="hasMetrics && cdfData" class="bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-2xl overflow-hidden shadow-2xl mb-8">
@@ -803,20 +687,11 @@ function formatRunDate(dateStr: string | null): string {
                 </div>
               </td>
               <td class="px-8 py-5">
-                <div class="flex flex-col gap-1.5 py-1">
-                  <div class="flex items-center gap-2">
-                    <span class="text-[8px] font-black uppercase text-amber-500/70 tracking-widest w-10">Quick</span>
-                    <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ m.quick_model }}</span>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <span class="text-[8px] font-black uppercase text-blue-400/70 tracking-widest w-10">Deep</span>
-                    <span class="text-[10px] font-bold text-white/90 bg-white/5 px-2 py-0.5 rounded border border-white/5 font-mono">{{ m.deep_model }}</span>
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <span class="text-[8px] font-black uppercase text-purple-400/70 tracking-widest w-10">Depth</span>
-                    <span class="text-[9px] font-bold text-purple-400/90 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/10 font-mono">{{ m.depth }} Rounds</span>
-                  </div>
-                </div>
+                <ConfigDisplay
+                  :quick-model="m.quick_model"
+                  :deep-model="m.deep_model"
+                  :depth="m.depth"
+                />
               </td>
               <td class="px-8 py-5">
                 <div v-if="m.metrics_id !== null && m.metrics_id !== undefined" class="flex items-center gap-4">

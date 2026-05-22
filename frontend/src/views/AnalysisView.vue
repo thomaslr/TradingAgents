@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { selectedTickers } from '../store'
+import { 
+  selectedTickers, 
+  provider, 
+  quickModel, 
+  deepModel, 
+  depth 
+} from '../store'
 import { 
   fetchAnalysisStatus, 
   fetchConfig, 
@@ -137,9 +143,6 @@ watch(tickersInput, (newVal) => {
     selectedTickers.value = parsed
   }
 })
-const provider = ref(localStorage.getItem('trading_provider') || 'openai')
-const quickModel = ref(localStorage.getItem('trading_quick_model') || '')
-const deepModel = ref(localStorage.getItem('trading_deep_model') || '')
 const executionType = ref<'now' | 'schedule'>((localStorage.getItem('trading_execution') as any) || 'now')
 const intervalMinutes = ref(Number(localStorage.getItem('trading_interval')) || 1440)
 
@@ -147,19 +150,13 @@ const intervalMinutes = ref(Number(localStorage.getItem('trading_interval')) || 
 const dateFrom = ref(localStorage.getItem('trading_from') || '')
 const dateTo = ref(localStorage.getItem('trading_to') || '')
 const force = ref(localStorage.getItem('trading_force') === 'true')
-const depth = ref(Number(localStorage.getItem('trading_depth')) || 1)
 
 // Persist Form State to localStorage
-
-watch(provider, (v) => localStorage.setItem('trading_provider', v))
-watch(quickModel, (v) => localStorage.setItem('trading_quick_model', v))
-watch(deepModel, (v) => localStorage.setItem('trading_deep_model', v))
 watch(executionType, (v) => localStorage.setItem('trading_execution', v))
 watch(intervalMinutes, (v) => localStorage.setItem('trading_interval', String(v)))
 watch(dateFrom, (v) => localStorage.setItem('trading_from', v))
 watch(dateTo, (v) => localStorage.setItem('trading_to', v))
 watch(force, (v) => localStorage.setItem('trading_force', String(v)))
-watch(depth, (v) => localStorage.setItem('trading_depth', String(v)))
 
 onMounted(async () => {
   await loadDefaultConfig()
@@ -467,7 +464,7 @@ async function handleSubmit() {
         dates = [new Date().toISOString().split('T')[0]]
       }
 
-      await startAnalysis({
+      const res = await startAnalysis({
         tickers,
         dates,
         force: force.value,
@@ -479,7 +476,7 @@ async function handleSubmit() {
       })
       const dateMsg = dates.length > 1 ? `${dates[0]} to ${dates[dates.length-1]}` : dates[0]
       currentJobParams.value = `Tickers: ${tickers.join(', ')} | Dates: ${dateMsg} | Depth: ${depth.value}`
-      successMessage.value = `Analysis started.`
+      successMessage.value = res?.message || `Analysis started.`
       isRunning.value = true
     } else {
       await addSchedule(tickers, config, intervalMinutes.value, scheduledTime.value)

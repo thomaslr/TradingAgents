@@ -339,8 +339,12 @@ export interface AnalysisMetrics {
   created_at: string
 }
 
-export async function fetchMetrics(limit = 100): Promise<AnalysisMetrics[]> {
-  const { data } = await api.get<AnalysisMetrics[]>('/runs/metrics', { params: { limit } })
+export async function fetchMetrics(limit = 100, ticker?: string): Promise<AnalysisMetrics[]> {
+  const params: Record<string, any> = { limit }
+  if (ticker) {
+    params.ticker = ticker
+  }
+  const { data } = await api.get<AnalysisMetrics[]>('/runs/metrics', { params })
   return data
 }
 

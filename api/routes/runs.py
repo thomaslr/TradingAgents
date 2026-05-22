@@ -105,8 +105,9 @@ def get_performance_data(
 
 @router.get("/metrics", response_model=List[Dict[str, Any]])
 def list_metrics(
+    ticker: Optional[str] = Query(None, description="Filter by ticker"),
     limit: int = Query(100, description="Max number of metrics to return"),
     registry: RunRegistry = Depends(get_registry)
 ):
     """List historical analysis metrics."""
-    return registry.list_metrics(limit=limit)
+    return registry.list_metrics(ticker=ticker, limit=limit)

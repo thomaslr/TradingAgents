@@ -5,15 +5,67 @@ import { fetchReportList, fetchReportContent, fetchRuns, fetchTickers, type Run 
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { ArrowLeft, FileText, RefreshCw, ChevronRight } from 'lucide-vue-next'
+import ConfigDisplay from '../components/ConfigDisplay.vue'
+import { activeTicker, setActiveTicker, activeDate } from '../store'
 
 const props = defineProps<{ ticker?: string; date?: string }>()
 const router = useRouter()
 
-const tickerInput = ref(props.ticker || localStorage.getItem('report_ticker') || '')
-const dateInput = ref(props.date || localStorage.getItem('report_date') || '')
+// Sync logic with global activeTicker & activeDate
+if (props.ticker) {
+  setActiveTicker(props.ticker)
+} else {
+  const savedReportTicker = localStorage.getItem('report_ticker')
+  if (savedReportTicker && savedReportTicker !== activeTicker.value) {
+    setActiveTicker(savedReportTicker)
+  }
+}
+
+if (props.date) {
+  activeDate.value = props.date
+}
+
+const tickerInput = ref(activeTicker.value)
+const dateInput = ref(activeDate.value)
 
 watch(tickerInput, (v) => localStorage.setItem('report_ticker', v))
-watch(dateInput, (v) => localStorage.setItem('report_date', v))
+watch(dateInput, (v) => {
+  if (v && v !== activeDate.value) {
+    activeDate.value = v
+  }
+})
+
+// Watches to handle external updates / sync
+watch(activeTicker, async (newTicker) => {
+  if (newTicker && tickerInput.value !== newTicker) {
+    tickerInput.value = newTicker
+    await changeTicker()
+  }
+})
+
+watch(activeDate, async (newDate) => {
+  if (newDate && dateInput.value !== newDate) {
+    dateInput.value = newDate
+    if (tickerInput.value && dateInput.value) {
+      router.replace({ name: 'report', params: { ticker: tickerInput.value, date: dateInput.value } })
+      await loadReport()
+    }
+  }
+})
+
+watch(() => props.ticker, (newTicker) => {
+  if (newTicker && newTicker !== activeTicker.value) {
+    setActiveTicker(newTicker)
+  }
+})
+
+watch(() => props.date, (newDate) => {
+  if (newDate && newDate !== dateInput.value) {
+    dateInput.value = newDate
+    activeDate.value = newDate
+    loadReport()
+  }
+})
 
 const availableTickers = ref<{ticker: string, name: string}[]>([])
 const allRunsForTicker = ref<Run[]>([])
@@ -43,6 +95,7 @@ async function loadInitialData() {
     }
 
     if (tickerInput.value) {
+      setActiveTicker(tickerInput.value)
       allRunsForTicker.value = (await fetchRuns(tickerInput.value)).filter(r => r.status === 'completed')
       
       if (!dateInput.value && allRunsForTicker.value.length > 0) {
@@ -97,6 +150,7 @@ function changeSelection() {
 
 async function changeTicker() {
   if (tickerInput.value) {
+    setActiveTicker(tickerInput.value)
     allRunsForTicker.value = (await fetchRuns(tickerInput.value)).filter(r => r.status === 'completed')
     if (allRunsForTicker.value.length > 0) {
       dateInput.value = allRunsForTicker.value[0].trade_date
@@ -178,14 +232,25 @@ function cleanFilename(name: string): string {
           </div>
         </div>
 
-        <!-- Rating Badge -->
-        <div v-if="run" class="flex items-center gap-2">
-          <span class="px-2.5 py-1 rounded-md text-xs font-bold" :class="getRatingBadge(run.rating).cls">
-            {{ getRatingBadge(run.rating).label }}
-          </span>
-          <span v-if="run.close_price" class="text-xs text-[var(--color-text-muted)] font-mono">
-            ${{ run.close_price.toFixed(2) }}
-          </span>
+
+        <!-- Rating Badge & Config Display -->
+        <div v-if="run" class="flex flex-col gap-2">
+          <div class="flex items-center gap-2">
+            <span class="px-2.5 py-1 rounded-md text-xs font-bold" :class="getRatingBadge(run.rating).cls">
+              {{ getRatingBadge(run.rating).label }}
+            </span>
+            <span v-if="run.close_price" class="text-xs text-[var(--color-text-muted)] font-mono">
+              ${{ run.close_price.toFixed(2) }}
+            </span>
+          </div>
+
+          <!-- Run config details -->
+          <ConfigDisplay
+            :quick-model="run.quick_model"
+            :deep-model="run.deep_model"
+            :depth="run.depth"
+            class="mt-1"
+          />
         </div>
       </div>
 
