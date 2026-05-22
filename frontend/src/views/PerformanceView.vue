@@ -3,7 +3,7 @@ import { ref, onMounted, computed, watch, onBeforeUnmount } from 'vue'
 import { fetchPerformanceData, clearMemoryEntries, fetchTickers, type PerformanceEntry, type SimulationConfig, type MemoryEntry } from '../api/client'
 import { createChart, ColorType, LineSeries, LineStyle } from 'lightweight-charts'
 import { Trophy, RefreshCw, Info, BarChart3, Trash2 } from 'lucide-vue-next'
-import { activeTicker, configs, enabledConfigs, loadConfigs, toggleConfig } from '../store'
+import { selectedTickers, configs, enabledConfigs, loadConfigs, toggleConfig } from '../store'
 import ConfigFilterPanel from '../components/ConfigFilterPanel.vue'
 import ConfigDisplay from '../components/ConfigDisplay.vue'
 
@@ -143,8 +143,8 @@ const filteredEntries = computed(() => {
   let result = entries.value
   
   // Apply Ticker Filter
-  if (activeTicker.value) {
-    result = result.filter(e => e.ticker === activeTicker.value)
+  if (selectedTickers.value && selectedTickers.value.length > 0) {
+    result = result.filter(e => selectedTickers.value.includes(e.ticker))
   }
   
   // Apply Time Range Filter

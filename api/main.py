@@ -52,6 +52,18 @@ async def startup_event():
     from tradingagents.db.registry import RunRegistry
     from tradingagents.default_config import DEFAULT_CONFIG
     
+    # Reset any stuck "running" jobs back to "pending"
+    db_path = DEFAULT_CONFIG["db_path"]
+    try:
+        registry = RunRegistry(db_path)
+        registry.conn.execute("UPDATE research_queue SET status = 'pending' WHERE status = 'running'")
+        registry.conn.commit()
+    except Exception as e:
+        logging.error(f"Failed to reset running jobs: {e}")
+    finally:
+        if 'registry' in locals():
+            registry.close()
+            
     # We use a dummy background tasks object for the startup call
     from fastapi import BackgroundTasks
     start_worker_if_needed(BackgroundTasks(), DEFAULT_CONFIG["db_path"], DEFAULT_CONFIG)
@@ -79,7 +91,7 @@ async def scheduler_loop():
                 today = datetime.now().strftime("%Y-%m-%d")
                 
                 # To address duplicate runs for the same ticker/date, 
-                # we use force=True to ensure it overwrites.
+                # we use force=False to properly skip already processed stocks.
                 from tradingagents.db.registry import RunRegistry
                 registry = RunRegistry(db_path)
                 try:
@@ -91,7 +103,7 @@ async def scheduler_loop():
                         "quick_model": job["config"].get("quick_think_llm", ""),
                         "deep_model": job["config"].get("deep_think_llm", ""),
                         "depth": job["config"].get("max_debate_rounds", 1),
-                        "force": True
+                        "force": False
                     }
                     # Add to queue with priority=True to bump to top
                     registry.add_to_queue(job_data, priority=True)

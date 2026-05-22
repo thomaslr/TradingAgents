@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { fetchMetrics, fetchCacheStats, clearAnalystCache, type AnalysisMetrics, type CacheStats, type SimulationConfig } from '../api/client'
 import { Beaker, Zap, Cpu, BarChart3, RefreshCw, Layers, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-vue-next'
-import { configs, enabledConfigs, loadConfigs, activeTicker } from '../store'
+import { configs, enabledConfigs, loadConfigs, selectedTickers } from '../store'
 import ConfigFilterPanel from '../components/ConfigFilterPanel.vue'
 import ConfigDisplay from '../components/ConfigDisplay.vue'
 
@@ -19,9 +19,9 @@ const isTableCollapsed = ref(localStorage.getItem('res_table_collapsed') === 'tr
 watch(isAnalyticsCollapsed, (v) => localStorage.setItem('res_analytics_collapsed', String(v)))
 watch(isTableCollapsed, (v) => localStorage.setItem('res_table_collapsed', String(v)))
 
-watch(activeTicker, () => {
+watch(selectedTickers, () => {
   loadMetrics()
-})
+}, { deep: true })
 
 function safeConfigColor(c: SimulationConfig): string {
   const color = c.color || '#10b981'
@@ -183,7 +183,7 @@ onMounted(async () => {
 async function loadMetrics() {
   loading.value = true
   try {
-    metrics.value = await fetchMetrics(500, activeTicker.value)
+    metrics.value = await fetchMetrics(2000)
   } catch (e) {
     console.error('Failed to load research metrics', e)
   } finally {
@@ -230,8 +230,11 @@ const totalTokens = computed(() => {
 })
 
 const filteredMetrics = computed(() => {
-  // Filter by active ticker first
-  let result = metrics.value.filter(m => m.ticker === activeTicker.value)
+  // Filter by selected tickers
+  let result = metrics.value
+  if (selectedTickers.value && selectedTickers.value.length > 0) {
+    result = result.filter(m => selectedTickers.value.includes(m.ticker))
+  }
 
   // Filter by enabled simulation configs
   if (configs.value.length > 0 && enabledConfigs.value.size > 0 && enabledConfigs.value.size < configs.value.length) {

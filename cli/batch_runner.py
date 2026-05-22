@@ -486,8 +486,10 @@ def run_batch_analysis(
                     start_time = time.time()
                     progress.update(task, status="[yellow]Initializing[/yellow]")
                     
-                    # We use a simple timeout check (though a true async timeout is better, 
-                    # for a CLI this helps us catch loops between steps)
+                    # Ensure force is passed down to the analysts so they bypass their cache
+                    if force:
+                        config["force"] = True
+
                     final_state, decision = graph.propagate(ticker, date)
                     
                     elapsed = time.time() - start_time
