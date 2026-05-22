@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchReportList, fetchReportContent, fetchRuns, fetchTickers, type Run } from '../api/client'
+import { fetchReportList, fetchReportContent, fetchRuns, type Run } from '../api/client'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { ArrowLeft, FileText, RefreshCw, ChevronRight } from 'lucide-vue-next'
@@ -67,7 +67,6 @@ watch(() => props.date, (newDate) => {
   }
 })
 
-const availableTickers = ref<{ticker: string, name: string}[]>([])
 const allRunsForTicker = ref<Run[]>([])
 
 const files = ref<string[]>([])
@@ -85,15 +84,6 @@ onMounted(async () => {
 
 async function loadInitialData() {
   try {
-    availableTickers.value = await fetchTickers()
-    
-    if (!tickerInput.value && availableTickers.value.length > 0) {
-      tickerInput.value = availableTickers.value[0].ticker
-    } else if (tickerInput.value && !availableTickers.value.find(t => t.ticker === tickerInput.value)) {
-      availableTickers.value.push({ ticker: tickerInput.value, name: tickerInput.value })
-      availableTickers.value.sort((a, b) => a.ticker.localeCompare(b.ticker))
-    }
-
     if (tickerInput.value) {
       setActiveTicker(tickerInput.value)
       allRunsForTicker.value = (await fetchRuns(tickerInput.value)).filter(r => r.status === 'completed')
@@ -209,26 +199,8 @@ function cleanFilename(name: string): string {
             <ArrowLeft :size="16" />
           </button>
           <div class="flex-1 min-w-0 pr-2">
-            <select
-              v-model="tickerInput"
-              @change="changeTicker"
-              class="w-full bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded px-2 py-1 text-sm font-bold text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent-primary)] mb-2"
-            >
-              <option v-for="t in availableTickers" :key="t.ticker" :value="t.ticker">
-                {{ t.ticker }}
-              </option>
-            </select>
-            <select
-              v-model="dateInput"
-              @change="changeSelection"
-              class="w-full bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded px-2 py-1 text-xs text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent-primary)] mb-2"
-              :disabled="allRunsForTicker.length === 0"
-            >
-              <option v-for="r in allRunsForTicker" :key="r.trade_date" :value="r.trade_date">
-                {{ r.trade_date }}
-              </option>
-              <option v-if="allRunsForTicker.length === 0" disabled>No reports found</option>
-            </select>
+            <div class="text-sm font-bold text-[var(--color-text-primary)] mb-1">{{ tickerInput }}</div>
+            <div class="text-xs text-[var(--color-text-muted)] font-mono">{{ dateInput || 'No Date Selected' }}</div>
           </div>
         </div>
 
