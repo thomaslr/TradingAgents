@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { createChart, type IChartApi, type ISeriesApi, ColorType, CandlestickSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts'
-import { fetchOHLC, fetchRuns, fetchTickers, type Run, type VolumeItem, type SimulationConfig } from '../api/client'
+import { createChart, type IChartApi, type ISeriesApi, ColorType, CandlestickSeries, HistogramSeries, createSeriesMarkers, LineSeries, LineStyle } from 'lightweight-charts'
+import { fetchOHLC, fetchRuns, fetchTickers, fetchPerformanceData, type Run, type VolumeItem, type SimulationConfig, type PerformanceEntry, type MemoryEntry } from '../api/client'
 import { ArrowLeft, RefreshCw, Clock } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { activeTicker, setActiveTicker, configs, enabledConfigs, toggleConfig, loadConfigs } from '../store'
@@ -130,6 +130,245 @@ function padDate(val: string): string {
   return val
 }
 
+// Strategy return overlay toggles & helpers
+const showStrategyA = ref(localStorage.getItem('chart_show_strat_a') === 'true')
+const showStrategyB = ref(localStorage.getItem('chart_show_strat_b') === 'true')
+const showStrategyC = ref(localStorage.getItem('chart_show_strat_c') === 'true')
+
+watch(showStrategyA, (v) => {
+  localStorage.setItem('chart_show_strat_a', String(v))
+  loadChart()
+})
+watch(showStrategyB, (v) => {
+  localStorage.setItem('chart_show_strat_b', String(v))
+  loadChart()
+})
+watch(showStrategyC, (v) => {
+  localStorage.setItem('chart_show_strat_c', String(v))
+  loadChart()
+})
+
+const benchmarkType = ref<'SPY' | 'ASSET'>((localStorage.getItem('perf_benchmark') as any) || 'ASSET')
+const showCosts = ref(false)
+const commissionPerTrade = ref(0.001)
+
+function parsePct(val: string | null): number {
+  if (!val) return 0
+  const parsed = parseFloat(val.replace('%', ''))
+  return isNaN(parsed) ? 0 : parsed / 100
+}
+
+function isWeekend(dateStr: string): boolean {
+  const date = new Date(dateStr + 'T00:00:00Z')
+  const day = date.getUTCDay()
+  return day === 0 || day === 6
+}
+
+function getNextWeekday(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00Z')
+  do {
+    d.setUTCDate(d.getUTCDate() + 1)
+  } while (d.getUTCDay() === 0 || d.getUTCDay() === 6)
+  return d.toISOString().split('T')[0]
+}
+
+function getWeekdaysBetween(startStr: string, endStr: string): string[] {
+  const list: string[] = []
+  const endDate = new Date(endStr + 'T00:00:00Z')
+  const currDate = new Date(startStr + 'T00:00:00Z')
+  
+  while (currDate <= endDate) {
+    const day = currDate.getUTCDay()
+    if (day !== 0 && day !== 6) {
+      list.push(currDate.toISOString().split('T')[0])
+    }
+    currDate.setUTCDate(currDate.getUTCDate() + 1)
+  }
+  return list
+}
+
+function getEndDateWithBuffer(lastDateStr: string, daysBuffer = 5): string {
+  let curr = lastDateStr
+  for (let i = 0; i < daysBuffer; i++) {
+    curr = getNextWeekday(curr)
+  }
+  return curr
+}
+
+interface ActiveTrade {
+  startIdx: number
+  endIdx: number
+  dailyReturn: number
+  ticker: string
+}
+
+function getTargetWeight(rating: string, prevWeight: number): number {
+  const r = rating.toLowerCase()
+  if (r.includes('buy')) return 1.0
+  if (r.includes('overweight')) return 1.5
+  if (r.includes('underweight')) return 0.5
+  if (r.includes('sell')) return 0.0
+  return prevWeight
+}
+
+function computeConfigReturns(configEntries: MemoryEntry[]) {
+  const weekdayEntries = configEntries.filter(e => !isWeekend(e.date))
+  if (weekdayEntries.length === 0) {
+    return { stratAPoints: [], stratBPoints: [], stratCPoints: [], benchPoints: [] }
+  }
+
+  const activeTickers = Array.from(new Set(weekdayEntries.map(e => e.ticker)))
+  const tickerCount = activeTickers.length || 1
+  const slotsPerTicker = 5
+  const totalSlots = slotsPerTicker * tickerCount
+
+  const dateGroups = new Map<string, MemoryEntry[]>()
+  weekdayEntries.forEach(e => {
+    if (!dateGroups.has(e.date)) dateGroups.set(e.date, [])
+    dateGroups.get(e.date)!.push(e)
+  })
+
+  const runDates = Array.from(new Set(weekdayEntries.map(e => e.date)))
+    .filter(d => !isWeekend(d))
+    .sort()
+
+  if (runDates.length === 0) {
+    return { stratAPoints: [], stratBPoints: [], stratCPoints: [], benchPoints: [] }
+  }
+
+  const startDate = runDates[0]
+  const lastRunDate = runDates[runDates.length - 1]
+  const endDate = getEndDateWithBuffer(lastRunDate, 5)
+  const datasetDates = getWeekdaysBetween(startDate, endDate)
+
+  let stratAValue = 100
+  let stratBValue = 100
+  let stratCValue = 100
+  let benchValue = 100
+  const stratAPoints: { time: string; value: number }[] = []
+  const stratBPoints: { time: string; value: number }[] = []
+  const stratCPoints: { time: string; value: number }[] = []
+  const benchPoints: { time: string; value: number }[] = []
+
+  let stratATrades: ActiveTrade[] = []
+  let benchTrades: ActiveTrade[] = []
+
+  const tickerWeightsB = new Map<string, number>()
+  const tickerWeightsC = new Map<string, number>()
+  activeTickers.forEach(t => {
+    tickerWeightsB.set(t, 0.0)
+    tickerWeightsC.set(t, 0.0)
+  })
+
+  datasetDates.forEach((date, idx) => {
+    stratATrades = stratATrades.filter(t => idx < t.endIdx)
+    benchTrades = benchTrades.filter(t => idx < t.endIdx)
+
+    const dayEntries = dateGroups.get(date) || []
+    let stratBTradeCostsToday = 0
+    let stratCTradeCostsToday = 0
+
+    dayEntries.forEach(e => {
+      const raw = parsePct(e.raw)
+      const alpha = parsePct(e.alpha)
+      const spy = raw - alpha
+
+      const baseBench = Math.max(0.0001, 1 + (benchmarkType.value === 'SPY' ? spy : raw))
+      const dailyBenchRet = Math.pow(baseBench, 1 / 5) - 1
+
+      benchTrades.push({
+        startIdx: idx,
+        endIdx: idx + 5,
+        dailyReturn: dailyBenchRet,
+        ticker: e.ticker
+      })
+
+      // Strat A (5-Day Horizon) uses Portfolio Manager rating
+      const pmRating = (e.rating || '').toLowerCase()
+      const isPMLong = pmRating.includes('buy') || pmRating.includes('overweight')
+
+      if (isPMLong) {
+        let dailyStratRet = dailyBenchRet
+        if (showCosts.value) {
+          const cost = commissionPerTrade.value
+          dailyStratRet -= (cost / 5)
+        }
+        stratATrades.push({
+          startIdx: idx,
+          endIdx: idx + 5,
+          dailyReturn: dailyStratRet,
+          ticker: e.ticker
+        })
+      }
+
+      // Strat B (Portfolio Manager Dynamic) weight updates
+      const prevPMWeight = tickerWeightsB.get(e.ticker) ?? 0.0
+      const newPMWeight = getTargetWeight(e.rating, prevPMWeight)
+      if (newPMWeight !== prevPMWeight) {
+        tickerWeightsB.set(e.ticker, newPMWeight)
+        if (showCosts.value) {
+          const cost = commissionPerTrade.value
+          const costForTicker = cost * Math.abs(newPMWeight - prevPMWeight) / tickerCount
+          stratBTradeCostsToday += costForTicker
+        }
+      }
+
+      // Strat C (Trader Dynamic) weight updates
+      const prevTraderWeight = tickerWeightsC.get(e.ticker) ?? 0.0
+      const newTraderWeight = getTargetWeight(e.decision || '', prevTraderWeight)
+      if (newTraderWeight !== prevTraderWeight) {
+        tickerWeightsC.set(e.ticker, newTraderWeight)
+        if (showCosts.value) {
+          const cost = commissionPerTrade.value
+          const costForTicker = cost * Math.abs(newTraderWeight - prevTraderWeight) / tickerCount
+          stratCTradeCostsToday += costForTicker
+        }
+      }
+    })
+
+    const benchDailyRet = benchTrades.reduce((sum, t) => sum + t.dailyReturn, 0) / totalSlots
+    const stratADailyRet = stratATrades.reduce((sum, t) => sum + t.dailyReturn, 0) / totalSlots
+
+    let stratBDailyRetSum = 0
+    activeTickers.forEach(T => {
+      const weight = tickerWeightsB.get(T) ?? 0.0
+      const activeBenchTradesForTicker = benchTrades.filter(t => t.ticker === T)
+      const sumActiveBenchReturns = activeBenchTradesForTicker.reduce((sum, t) => sum + t.dailyReturn, 0)
+      const tickerDailyBenchmarkReturn = sumActiveBenchReturns / 5
+      stratBDailyRetSum += weight * tickerDailyBenchmarkReturn
+    })
+    let stratBDailyRet = stratBDailyRetSum / tickerCount
+    if (showCosts.value) {
+      stratBDailyRet -= stratBTradeCostsToday
+    }
+
+    let stratCDailyRetSum = 0
+    activeTickers.forEach(T => {
+      const weight = tickerWeightsC.get(T) ?? 0.0
+      const activeBenchTradesForTicker = benchTrades.filter(t => t.ticker === T)
+      const sumActiveBenchReturns = activeBenchTradesForTicker.reduce((sum, t) => sum + t.dailyReturn, 0)
+      const tickerDailyBenchmarkReturn = sumActiveBenchReturns / 5
+      stratCDailyRetSum += weight * tickerDailyBenchmarkReturn
+    })
+    let stratCDailyRet = stratCDailyRetSum / tickerCount
+    if (showCosts.value) {
+      stratCDailyRet -= stratCTradeCostsToday
+    }
+
+    benchValue = benchValue * (1 + benchDailyRet)
+    stratAValue = stratAValue * (1 + stratADailyRet)
+    stratBValue = stratBValue * (1 + stratBDailyRet)
+    stratCValue = stratCValue * (1 + stratCDailyRet)
+
+    stratAPoints.push({ time: date, value: stratAValue })
+    stratBPoints.push({ time: date, value: stratBValue })
+    stratCPoints.push({ time: date, value: stratCValue })
+    benchPoints.push({ time: date, value: benchValue })
+  })
+
+  return { stratAPoints, stratBPoints, stratCPoints, benchPoints }
+}
+
 async function loadChart() {
   if (!chartContainer.value) return
   loading.value = true
@@ -142,7 +381,7 @@ async function loadChart() {
     
     console.log(`Loading Chart: ${tickerInput.value} | UseDates: ${useDates} (${dateFrom.value} to ${dateTo.value}) | Period: ${period.value}`)
 
-    const [ohlc, allRuns] = await Promise.all([
+    const [ohlc, allRuns, perfEntries] = await Promise.all([
       fetchOHLC(
         tickerInput.value, 
         period.value, 
@@ -151,6 +390,7 @@ async function loadChart() {
         useDates ? dateTo.value : undefined
       ),
       fetchRuns(tickerInput.value),
+      fetchPerformanceData({ ticker: tickerInput.value })
     ])
 
     runs.value = allRuns.filter(r => r.status === 'completed')
@@ -267,6 +507,111 @@ async function loadChart() {
 
       // Update series markers (clear previous markers if empty)
       createSeriesMarkers(candleSeries, markers as any)
+    }
+
+    // Add Strategy Overlay Curves
+    if (perfEntries && perfEntries.length > 0 && (showStrategyA.value || showStrategyB.value || showStrategyC.value)) {
+      // Group performance entries by config_id
+      const entriesByConfig = new Map<string, PerformanceEntry[]>()
+      perfEntries.forEach(e => {
+        if (!entriesByConfig.has(e.config_id)) {
+          entriesByConfig.set(e.config_id, [])
+        }
+        entriesByConfig.get(e.config_id)!.push(e)
+      })
+
+      // Map to quickly find stock price on a date
+      const priceMap = new Map(ohlc.candles.map(c => [c.time, c.close]))
+
+      // For each enabled configuration
+      configs.value.forEach(config => {
+        if (!enabledConfigs.value.has(config.config_id)) return
+
+        const configEntries = entriesByConfig.get(config.config_id) || []
+        if (configEntries.length === 0) return
+
+        // Adapt to MemoryEntry shape expected by computeConfigReturns
+        const adaptedEntries: MemoryEntry[] = configEntries.map(e => ({
+          date: e.trade_date,
+          ticker: e.ticker,
+          rating: e.rating || 'Hold',
+          pending: false,
+          raw: e.raw_return != null ? `${(e.raw_return * 100).toFixed(1)}%` : null,
+          alpha: e.alpha_return != null ? `${(e.alpha_return * 100).toFixed(1)}%` : null,
+          holding: e.holding_days != null ? `${e.holding_days}d` : null,
+          decision: e.action || '',
+          reflection: e.reflection || '',
+          quick_model: e.quick_model,
+          deep_model: e.deep_model,
+          depth: String(e.depth),
+          runtime_sec: e.runtime_sec != null ? String(e.runtime_sec) : '0',
+          config_id: e.config_id
+        })).sort((a, b) => a.date.localeCompare(b.date))
+
+        const { stratAPoints, stratBPoints, stratCPoints } = computeConfigReturns(adaptedEntries)
+
+        // Find the price at the start date to normalize curves
+        const firstPoint = stratAPoints[0] || stratBPoints[0] || stratCPoints[0]
+        if (!firstPoint) return
+
+        const startPrice = priceMap.get(firstPoint.time) || ohlc.candles[0]?.close || 100
+
+        // Draw Strategy A (Horizon)
+        if (showStrategyA.value && stratAPoints.length > 0) {
+          const normalizedData = stratAPoints
+            .filter(p => priceMap.has(p.time)) // align with stock timeline
+            .map(p => ({
+              time: p.time,
+              value: p.value * (startPrice / 100)
+            }))
+          
+          if (normalizedData.length > 0) {
+            const series = chart!.addSeries(LineSeries, {
+              color: safeConfigColor(config),
+              lineWidth: 3,
+            })
+            series.setData(normalizedData as any)
+          }
+        }
+
+        // Draw Strategy B (Portfolio Manager)
+        if (showStrategyB.value && stratBPoints.length > 0) {
+          const normalizedData = stratBPoints
+            .filter(p => priceMap.has(p.time)) // align with stock timeline
+            .map(p => ({
+              time: p.time,
+              value: p.value * (startPrice / 100)
+            }))
+          
+          if (normalizedData.length > 0) {
+            const series = chart!.addSeries(LineSeries, {
+              color: safeConfigColor(config),
+              lineWidth: 3,
+              lineStyle: LineStyle.Dotted,
+            })
+            series.setData(normalizedData as any)
+          }
+        }
+
+        // Draw Strategy C (Trading Agent)
+        if (showStrategyC.value && stratCPoints.length > 0) {
+          const normalizedData = stratCPoints
+            .filter(p => priceMap.has(p.time)) // align with stock timeline
+            .map(p => ({
+              time: p.time,
+              value: p.value * (startPrice / 100)
+            }))
+          
+          if (normalizedData.length > 0) {
+            const series = chart!.addSeries(LineSeries, {
+              color: safeConfigColor(config),
+              lineWidth: 3,
+              lineStyle: LineStyle.Dashed,
+            })
+            series.setData(normalizedData as any)
+          }
+        }
+      })
     }
 
     chart.timeScale().fitContent()
@@ -407,6 +752,35 @@ watch([dateFrom, dateTo], ([f, t]) => {
       >
         <span class="w-3 h-3 rounded-full bg-[var(--color-signal-hold)]"></span>
         <span :class="showHold ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'">Hold</span>
+      </button>
+
+      <div class="w-px h-6 bg-[var(--color-border-default)] self-center"></div>
+
+      <button 
+        @click="showStrategyA = !showStrategyA"
+        class="flex items-center gap-2 transition-opacity"
+        :class="showStrategyA ? 'opacity-100' : 'opacity-40'"
+      >
+        <span class="font-bold text-xs text-emerald-400">──</span>
+        <span :class="showStrategyA ? 'text-[var(--color-text-primary)] font-bold' : 'text-[var(--color-text-muted)]'">5-Day Horizon (Solid)</span>
+      </button>
+
+      <button 
+        @click="showStrategyB = !showStrategyB"
+        class="flex items-center gap-2 transition-opacity"
+        :class="showStrategyB ? 'opacity-100' : 'opacity-40'"
+      >
+        <span class="font-bold text-xs text-emerald-400">┈┈</span>
+        <span :class="showStrategyB ? 'text-[var(--color-text-primary)] font-bold' : 'text-[var(--color-text-muted)]'">Portfolio Manager (Dotted)</span>
+      </button>
+
+      <button 
+        @click="showStrategyC = !showStrategyC"
+        class="flex items-center gap-2 transition-opacity"
+        :class="showStrategyC ? 'opacity-100' : 'opacity-40'"
+      >
+        <span class="font-bold text-xs text-emerald-400">╌╌</span>
+        <span :class="showStrategyC ? 'text-[var(--color-text-primary)] font-bold' : 'text-[var(--color-text-muted)]'">Trading Agent (Dashed)</span>
       </button>
 
       <!-- Config Toggles -->

@@ -16,6 +16,9 @@ const filteredConfigs = computed(() => {
   return configs.value.filter(c => c.label.toLowerCase().includes(q))
 })
 
+const enabledCount = computed(() => enabledConfigs.value.size)
+const totalCount = computed(() => configs.value.length)
+
 function safeConfigColor(c: SimulationConfig): string {
   const color = c.color || '#10b981'
   const lower = color.toLowerCase().trim()
@@ -34,7 +37,7 @@ function safeConfigColor(c: SimulationConfig): string {
 
 <template>
   <div
-    v-if="configs.length > 0"
+    v-if="totalCount > 0"
     :class="[
       'bg-white/5 p-4 rounded-xl border border-white/10 flex flex-col gap-3 shadow-lg',
       marginClass || 'mb-6'
@@ -44,7 +47,7 @@ function safeConfigColor(c: SimulationConfig): string {
       <div class="flex items-center gap-2">
         <Filter :size="14" class="text-[var(--color-accent-primary)] opacity-80" />
         <span class="text-xs uppercase font-black tracking-widest text-white">Isolate Simulation Configs</span>
-        <span class="text-[10px] text-[var(--color-text-muted)] font-mono">({{ enabledConfigs.size }} / {{ configs.length }} active)</span>
+        <span class="text-[10px] text-[var(--color-text-muted)] font-mono">({{ enabledCount }} / {{ totalCount }} active)</span>
       </div>
 
       <!-- Controls & Search Bar -->

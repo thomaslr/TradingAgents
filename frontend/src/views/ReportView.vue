@@ -181,7 +181,13 @@ function getRatingBadge(rating: string | null) {
 }
 
 function cleanFilename(name: string): string {
-  return name.replace('.md', '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  const clean = name.replace('.md', '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+  if (clean === 'Market Analyst') return 'Expert Rating (Market)'
+  if (clean === 'Social Media Analyst') return 'Expert Rating (Social)'
+  if (clean === 'News Sentiment Analyst') return 'Expert Rating (News)'
+  if (clean === 'Fundamental Analyst') return 'Expert Rating (Fundamental)'
+  if (clean === 'Final Trade Decision') return 'Portfolio Manager'
+  return clean
 }
 </script>
 

@@ -3,7 +3,7 @@ import { ref, onMounted, computed, watch, onBeforeUnmount } from 'vue'
 import { fetchPerformanceData, clearMemoryEntries, fetchTickers, type PerformanceEntry, type SimulationConfig, type MemoryEntry } from '../api/client'
 import { createChart, ColorType, LineSeries, LineStyle } from 'lightweight-charts'
 import { Trophy, RefreshCw, Info, BarChart3, Trash2 } from 'lucide-vue-next'
-import { selectedTickers, configs, enabledConfigs, loadConfigs, toggleConfig } from '../store'
+import { selectedTickers, activeTicker, configs, enabledConfigs, loadConfigs, toggleConfig } from '../store'
 import ConfigFilterPanel from '../components/ConfigFilterPanel.vue'
 import ConfigDisplay from '../components/ConfigDisplay.vue'
 
@@ -50,7 +50,7 @@ const entries = computed<MemoryEntry[]>(() => {
 const showCosts = ref(false)
 const commissionPerTrade = ref(0.001) // 0.1% default simulation cost
 const benchmarkType = ref<'SPY' | 'ASSET'>((localStorage.getItem('perf_benchmark') as any) || 'ASSET')
-const strategySource = ref<'RATING' | 'ACTION'>((localStorage.getItem('perf_source') as any) || 'RATING')
+const showStrategyC = ref(localStorage.getItem('perf_show_strat_c') !== 'false')
 const costModel = ref<'FLAT' | 'IBKR'>('FLAT')
 const timeRange = ref<'1M' | '3M' | '6M' | 'YTD' | 'ALL' | 'CUSTOM'>((localStorage.getItem('perf_range') as any) || '6M')
 const dateFrom = ref(localStorage.getItem('perf_from') || '')
@@ -58,6 +58,7 @@ const dateTo = ref(localStorage.getItem('perf_to') || '')
 
 const showStrategyA = ref(localStorage.getItem('perf_show_strat_a') !== 'false')
 const showStrategyB = ref(localStorage.getItem('perf_show_strat_b') !== 'false')
+const filterMode = ref<'ACTIVE' | 'ALL'>((localStorage.getItem('perf_filter_mode') as any) || 'ACTIVE')
 
 // Visible Chart Range (for dynamic stats)
 const visibleTimeRange = ref<{ from: string; to: string } | null>(null)
@@ -66,12 +67,13 @@ const visibleTimeRange = ref<{ from: string; to: string } | null>(null)
 // Persist Filters
 
 watch(benchmarkType, (v) => localStorage.setItem('perf_benchmark', v))
-watch(strategySource, (v) => localStorage.setItem('perf_source', v))
+watch(showStrategyC, (v) => localStorage.setItem('perf_show_strat_c', String(v)))
 watch(timeRange, (v) => localStorage.setItem('perf_range', v))
 watch(dateFrom, (v) => localStorage.setItem('perf_from', v))
 watch(dateTo, (v) => localStorage.setItem('perf_to', v))
 watch(showStrategyA, (v) => localStorage.setItem('perf_show_strat_a', String(v)))
 watch(showStrategyB, (v) => localStorage.setItem('perf_show_strat_b', String(v)))
+watch(filterMode, (v) => localStorage.setItem('perf_filter_mode', v))
 
 
 const expandedRows = ref<Set<string>>(new Set())
@@ -143,7 +145,9 @@ const filteredEntries = computed(() => {
   let result = entries.value
   
   // Apply Ticker Filter
-  if (selectedTickers.value && selectedTickers.value.length > 0) {
+  if (filterMode.value === 'ACTIVE' && activeTicker.value) {
+    result = result.filter(e => e.ticker === activeTicker.value)
+  } else if (selectedTickers.value && selectedTickers.value.length > 0) {
     result = result.filter(e => selectedTickers.value.includes(e.ticker))
   }
   
@@ -257,9 +261,11 @@ function computeConfigReturns(configEntries: MemoryEntry[]) {
     return {
       stratAPoints: [],
       stratBPoints: [],
+      stratCPoints: [],
       benchPoints: [],
       stratAROI: 0,
       stratBROI: 0,
+      stratCROI: 0,
       benchROI: 0,
     }
   }
@@ -286,9 +292,11 @@ function computeConfigReturns(configEntries: MemoryEntry[]) {
     return {
       stratAPoints: [],
       stratBPoints: [],
+      stratCPoints: [],
       benchPoints: [],
       stratAROI: 0,
       stratBROI: 0,
+      stratCROI: 0,
       benchROI: 0,
     }
   }
@@ -302,17 +310,23 @@ function computeConfigReturns(configEntries: MemoryEntry[]) {
 
   let stratAValue = 100
   let stratBValue = 100
+  let stratCValue = 100
   let benchValue = 100
   const stratAPoints: { time: string; value: number }[] = []
   const stratBPoints: { time: string; value: number }[] = []
+  const stratCPoints: { time: string; value: number }[] = []
   const benchPoints: { time: string; value: number }[] = []
 
   let stratATrades: ActiveTrade[] = []
   let benchTrades: ActiveTrade[] = []
 
-  // Initialize weights for Strategy B
-  const tickerWeights = new Map<string, number>()
-  activeTickers.forEach(t => tickerWeights.set(t, 0.0))
+  // Initialize weights for Strategy B (PM) and Strategy C (Trader)
+  const tickerWeightsB = new Map<string, number>()
+  const tickerWeightsC = new Map<string, number>()
+  activeTickers.forEach(t => {
+    tickerWeightsB.set(t, 0.0)
+    tickerWeightsC.set(t, 0.0)
+  })
 
   datasetDates.forEach((date, idx) => {
     // 1. Clear completed trades
@@ -322,6 +336,7 @@ function computeConfigReturns(configEntries: MemoryEntry[]) {
     // 2. Add new trades starting today
     const dayEntries = dateGroups.get(date) || []
     let stratBTradeCostsToday = 0
+    let stratCTradeCostsToday = 0
 
     dayEntries.forEach(e => {
       const raw = parsePct(e.raw)
@@ -338,11 +353,11 @@ function computeConfigReturns(configEntries: MemoryEntry[]) {
         ticker: e.ticker
       })
 
-      const signal = strategySource.value === 'RATING' ? e.rating : e.decision
-      const rating = (signal || '').toLowerCase()
-      const isLong = rating.includes('buy') || rating.includes('overweight')
+      // Strat A (5-Day Horizon) uses Portfolio Manager rating
+      const pmRating = (e.rating || '').toLowerCase()
+      const isPMLong = pmRating.includes('buy') || pmRating.includes('overweight')
 
-      if (isLong) {
+      if (isPMLong) {
         let dailyStratRet = dailyBenchRet
         if (showCosts.value) {
           const cost = costModel.value === 'IBKR' ? 0.0015 : commissionPerTrade.value
@@ -356,15 +371,27 @@ function computeConfigReturns(configEntries: MemoryEntry[]) {
         })
       }
 
-      // Update weight for Strategy B
-      const prevWeight = tickerWeights.get(e.ticker) ?? 0.0
-      const newWeight = getTargetWeight(rating, prevWeight)
-      if (newWeight !== prevWeight) {
-        tickerWeights.set(e.ticker, newWeight)
+      // Strat B (Portfolio Manager Dynamic) weight updates
+      const prevPMWeight = tickerWeightsB.get(e.ticker) ?? 0.0
+      const newPMWeight = getTargetWeight(e.rating, prevPMWeight)
+      if (newPMWeight !== prevPMWeight) {
+        tickerWeightsB.set(e.ticker, newPMWeight)
         if (showCosts.value) {
           const cost = costModel.value === 'IBKR' ? 0.0015 : commissionPerTrade.value
-          const costForTicker = cost * Math.abs(newWeight - prevWeight) / tickerCount
+          const costForTicker = cost * Math.abs(newPMWeight - prevPMWeight) / tickerCount
           stratBTradeCostsToday += costForTicker
+        }
+      }
+
+      // Strat C (Trader Dynamic) weight updates
+      const prevTraderWeight = tickerWeightsC.get(e.ticker) ?? 0.0
+      const newTraderWeight = getTargetWeight(e.decision || '', prevTraderWeight)
+      if (newTraderWeight !== prevTraderWeight) {
+        tickerWeightsC.set(e.ticker, newTraderWeight)
+        if (showCosts.value) {
+          const cost = costModel.value === 'IBKR' ? 0.0015 : commissionPerTrade.value
+          const costForTicker = cost * Math.abs(newTraderWeight - prevTraderWeight) / tickerCount
+          stratCTradeCostsToday += costForTicker
         }
       }
     })
@@ -373,10 +400,10 @@ function computeConfigReturns(configEntries: MemoryEntry[]) {
     const benchDailyRet = benchTrades.reduce((sum, t) => sum + t.dailyReturn, 0) / totalSlots
     const stratADailyRet = stratATrades.reduce((sum, t) => sum + t.dailyReturn, 0) / totalSlots
 
-    // 4. Compute daily returns for Strategy B
+    // 4. Compute daily returns for Strategy B (PM)
     let stratBDailyRetSum = 0
     activeTickers.forEach(T => {
-      const weight = tickerWeights.get(T) ?? 0.0
+      const weight = tickerWeightsB.get(T) ?? 0.0
       const activeBenchTradesForTicker = benchTrades.filter(t => t.ticker === T)
       const sumActiveBenchReturns = activeBenchTradesForTicker.reduce((sum, t) => sum + t.dailyReturn, 0)
       const tickerDailyBenchmarkReturn = sumActiveBenchReturns / 5
@@ -387,22 +414,40 @@ function computeConfigReturns(configEntries: MemoryEntry[]) {
       stratBDailyRet -= stratBTradeCostsToday
     }
 
-    // 5. Compound
+    // 5. Compute daily returns for Strategy C (Trader)
+    let stratCDailyRetSum = 0
+    activeTickers.forEach(T => {
+      const weight = tickerWeightsC.get(T) ?? 0.0
+      const activeBenchTradesForTicker = benchTrades.filter(t => t.ticker === T)
+      const sumActiveBenchReturns = activeBenchTradesForTicker.reduce((sum, t) => sum + t.dailyReturn, 0)
+      const tickerDailyBenchmarkReturn = sumActiveBenchReturns / 5
+      stratCDailyRetSum += weight * tickerDailyBenchmarkReturn
+    })
+    let stratCDailyRet = stratCDailyRetSum / tickerCount
+    if (showCosts.value) {
+      stratCDailyRet -= stratCTradeCostsToday
+    }
+
+    // 6. Compound
     benchValue = benchValue * (1 + benchDailyRet)
     stratAValue = stratAValue * (1 + stratADailyRet)
     stratBValue = stratBValue * (1 + stratBDailyRet)
+    stratCValue = stratCValue * (1 + stratCDailyRet)
 
     stratAPoints.push({ time: date, value: stratAValue })
     stratBPoints.push({ time: date, value: stratBValue })
+    stratCPoints.push({ time: date, value: stratCValue })
     benchPoints.push({ time: date, value: benchValue })
   })
 
   return {
     stratAPoints,
     stratBPoints,
+    stratCPoints,
     benchPoints,
     stratAROI: stratAValue - 100,
     stratBROI: stratBValue - 100,
+    stratCROI: stratCValue - 100,
     benchROI: benchValue - 100,
   }
 }
@@ -421,7 +466,7 @@ const multiConfigStats = computed(() => {
       const configEntries = visibleEntries.value.filter(e => e.config_id === cid)
       
       const winsA = configEntries.filter(e => {
-        const signal = strategySource.value === 'RATING' ? e.rating : e.decision
+        const signal = e.rating
         const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
         const stratRet = isLong ? parsePct(e.raw) : 0
         const raw = parsePct(e.raw)
@@ -431,14 +476,13 @@ const multiConfigStats = computed(() => {
       }).length
 
       let winsB = 0
-      const tickerWeights = new Map<string, number>()
+      const tickerWeightsB = new Map<string, number>()
       const sortedEntries = [...configEntries].sort((a, b) => a.date.localeCompare(b.date))
       sortedEntries.forEach(e => {
-        const signal = strategySource.value === 'RATING' ? e.rating : e.decision
-        const rating = (signal || '').toLowerCase()
-        const prevWeight = tickerWeights.get(e.ticker) ?? 0.0
+        const rating = (e.rating || '').toLowerCase()
+        const prevWeight = tickerWeightsB.get(e.ticker) ?? 0.0
         const newWeight = getTargetWeight(rating, prevWeight)
-        tickerWeights.set(e.ticker, newWeight)
+        tickerWeightsB.set(e.ticker, newWeight)
         
         const raw = parsePct(e.raw)
         const alpha = parsePct(e.alpha)
@@ -450,7 +494,25 @@ const multiConfigStats = computed(() => {
         }
       })
 
-      const { benchROI, stratAROI, stratBROI } = computeConfigReturns(configEntries)
+      let winsC = 0
+      const tickerWeightsC = new Map<string, number>()
+      sortedEntries.forEach(e => {
+        const action = (e.decision || '').toLowerCase()
+        const prevWeight = tickerWeightsC.get(e.ticker) ?? 0.0
+        const newWeight = getTargetWeight(action, prevWeight)
+        tickerWeightsC.set(e.ticker, newWeight)
+        
+        const raw = parsePct(e.raw)
+        const alpha = parsePct(e.alpha)
+        const benchRet = benchmarkType.value === 'SPY' ? (raw - alpha) : raw
+        const stratRet = newWeight * benchRet
+        
+        if (stratRet > benchRet) {
+          winsC++
+        }
+      })
+
+      const { benchROI, stratAROI, stratBROI, stratCROI } = computeConfigReturns(configEntries)
       let totalRuntime = 0
       configEntries.forEach(e => {
         totalRuntime += parseFloat(e.runtime_sec || '0')
@@ -461,10 +523,13 @@ const multiConfigStats = computed(() => {
         count: configEntries.length,
         winRateA: (winsA / configEntries.length) * 100,
         winRateB: (winsB / configEntries.length) * 100,
+        winRateC: (winsC / configEntries.length) * 100,
         totalAlphaA: stratAROI - benchROI,
         totalAlphaB: stratBROI - benchROI,
+        totalAlphaC: stratCROI - benchROI,
         stratAROI,
         stratBROI,
+        stratCROI,
         benchROI,
         totalRuntime
       }
@@ -478,6 +543,7 @@ const performanceData = computed(() => {
 
   const stratAMaps: Record<string, any[]> = {}
   const stratBMaps: Record<string, any[]> = {}
+  const stratCMaps: Record<string, any[]> = {}
   let benchPoints: any[] = []
 
   targetConfigs.forEach(config => {
@@ -485,14 +551,15 @@ const performanceData = computed(() => {
     const configEntries = filteredEntries.value.filter(e => e.config_id === cid)
     if (configEntries.length === 0) return
 
-    const { stratAPoints, stratBPoints, benchPoints: currentBenchPoints } = computeConfigReturns(configEntries)
+    const { stratAPoints, stratBPoints, stratCPoints, benchPoints: currentBenchPoints } = computeConfigReturns(configEntries)
     
     stratAMaps[cid] = stratAPoints
     stratBMaps[cid] = stratBPoints
+    stratCMaps[cid] = stratCPoints
     if (benchPoints.length === 0) benchPoints = currentBenchPoints
   })
 
-  return { stratAMaps, stratBMaps, benchPoints }
+  return { stratAMaps, stratBMaps, stratCMaps, benchPoints }
 })
 
 
@@ -571,7 +638,7 @@ function updateChart() {
   strategySeriesMap.forEach(s => chart.removeSeries(s))
   strategySeriesMap.clear()
 
-  const { stratAMaps, stratBMaps, benchPoints } = performanceData.value
+  const { stratAMaps, stratBMaps, stratCMaps, benchPoints } = performanceData.value
   
   // Set Benchmark
   if (benchPoints.length > 0) {
@@ -587,7 +654,7 @@ function updateChart() {
       const series = chart.addSeries(LineSeries, {
         color: safeConfigColor(config),
         lineWidth: 3,
-        title: `${config.label} (Current)`,
+        title: `${config.label} (Horizon)`,
       })
       series.setData(data)
       strategySeriesMap.set(`${cid}_A`, series)
@@ -604,10 +671,27 @@ function updateChart() {
         color: safeConfigColor(config),
         lineWidth: 3,
         lineStyle: LineStyle.Dotted,
-        title: `${config.label} (Strat B)`,
+        title: `${config.label} (PM)`,
       })
       series.setData(data)
       strategySeriesMap.set(`${cid}_B`, series)
+    })
+  }
+
+  // Add Strategy C series if enabled
+  if (showStrategyC.value) {
+    Object.entries(stratCMaps).forEach(([cid, data]) => {
+      const config = configs.value.find(c => c.config_id === cid)
+      if (!config) return
+
+      const series = chart.addSeries(LineSeries, {
+        color: safeConfigColor(config),
+        lineWidth: 3,
+        lineStyle: LineStyle.Dashed,
+        title: `${config.label} (Trader)`,
+      })
+      series.setData(data)
+      strategySeriesMap.set(`${cid}_C`, series)
     })
   }
 
@@ -617,7 +701,7 @@ function updateChart() {
 }
 
 
-watch([showCosts, performanceData, benchmarkType, strategySource, costModel, timeRange, enabledConfigs, showStrategyA, showStrategyB], () => {
+watch([showCosts, performanceData, benchmarkType, costModel, timeRange, enabledConfigs, showStrategyA, showStrategyB, showStrategyC, filterMode, activeTicker], () => {
   updateChart()
 })
 
@@ -640,7 +724,7 @@ function getSignalLabel(text: string) {
 }
 
 function getEntryStratRet(entry: MemoryEntry) {
-  const signal = strategySource.value === 'RATING' ? entry.rating : entry.decision
+  const signal = entry.rating
   const isLong = (signal || '').toLowerCase().includes('buy') || (signal || '').toLowerCase().includes('overweight')
   return isLong ? parsePct(entry.raw) : 0
 }
@@ -706,6 +790,26 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
 
         <!-- Row 2: Strategy & Benchmark -->
         <div class="flex flex-wrap items-center justify-end gap-3">
+          <!-- Ticker Focus -->
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center gap-1.5 ml-1">
+              <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)]">Ticker Focus</span>
+              <div class="group relative">
+                <Info :size="10" class="text-[var(--color-text-muted)] cursor-help hover:text-[var(--color-text-primary)] transition-colors" />
+                <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg text-[10px] text-[var(--color-text-primary)] opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-2xl backdrop-blur-md">
+                  <strong>Active Ticker Only:</strong> View returns only for the stock selected in the top bar.<br>
+                  <strong>All Tickers (Portfolio):</strong> View the aggregated performance of all target tickers.
+                </div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
+              <BarChart3 :size="14" class="text-[var(--color-text-muted)]" />
+              <select v-model="filterMode" class="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer">
+                <option value="ACTIVE">Active Ticker ({{ activeTicker }})</option>
+                <option value="ALL">All Tickers (Portfolio)</option>
+              </select>
+            </div>
+          </div>
           <!-- Benchmark Toggle -->
           <div class="flex flex-col gap-1">
             <div class="flex items-center gap-1.5 ml-1">
@@ -726,27 +830,6 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
             </div>
           </div>
 
-          <!-- Strategy Source -->
-          <div class="flex flex-col gap-1">
-            <div class="flex items-center gap-1.5 ml-1">
-              <span class="text-[10px] uppercase font-black text-[var(--color-text-muted)]">AI Signal Source</span>
-              <div class="group relative">
-                <Info :size="10" class="text-[var(--color-text-muted)] cursor-help hover:text-[var(--color-text-primary)] transition-colors" />
-                <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 p-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg text-[10px] text-[var(--color-text-primary)] opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-2xl backdrop-blur-md">
-                  <strong>Expert Ratings:</strong> Raw consensus of all AI analysts.<br>
-                  <strong>Final Actions:</strong> The Portfolio Manager's definitive decision.
-                </div>
-              </div>
-            </div>
-            <div class="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
-              <Info :size="14" class="text-[var(--color-text-muted)]" />
-              <select v-model="strategySource" class="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer">
-                <option value="RATING">Expert Ratings</option>
-                <option value="ACTION">Final Actions (PM)</option>
-              </select>
-            </div>
-          </div>
-
           <!-- Strategies Selector -->
           <div class="flex flex-col gap-1">
             <div class="flex items-center gap-1.5 ml-1">
@@ -761,12 +844,17 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
             <div class="flex items-center gap-2 px-3 py-1.5 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-lg">
               <label class="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-white select-none">
                 <input type="checkbox" v-model="showStrategyA" class="rounded bg-white/5 border-white/10 text-[var(--color-accent-primary)] focus:ring-0 focus:ring-offset-0 w-3.5 h-3.5" />
-                <span>Current</span>
+                <span>Horizon</span>
               </label>
               <div class="w-px h-4 bg-[var(--color-border-default)]"></div>
               <label class="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-white select-none">
                 <input type="checkbox" v-model="showStrategyB" class="rounded bg-white/5 border-white/10 text-[var(--color-accent-primary)] focus:ring-0 focus:ring-offset-0 w-3.5 h-3.5" />
-                <span>Strat B</span>
+                <span>PM</span>
+              </label>
+              <div class="w-px h-4 bg-[var(--color-border-default)]"></div>
+              <label class="flex items-center gap-1.5 cursor-pointer text-xs font-bold text-white select-none">
+                <input type="checkbox" v-model="showStrategyC" class="rounded bg-white/5 border-white/10 text-[var(--color-accent-primary)] focus:ring-0 focus:ring-offset-0 w-3.5 h-3.5" />
+                <span>Trader</span>
               </label>
             </div>
           </div>
@@ -848,12 +936,16 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
               </div>
               <div class="flex items-center gap-2">
                 <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
-                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Curr</span>
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Horizon</span>
                   <span class="text-xs font-bold text-yellow-400/90">{{ (s.totalAlphaA / (s.totalRuntime / 60 || 1)).toFixed(2) }}</span>
                 </div>
                 <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
-                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Strat B</span>
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">PM</span>
                   <span class="text-xs font-bold text-yellow-300">{{ (s.totalAlphaB / (s.totalRuntime / 60 || 1)).toFixed(2) }}</span>
+                </div>
+                <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Trader</span>
+                  <span class="text-xs font-bold text-yellow-200">{{ (s.totalAlphaC / (s.totalRuntime / 60 || 1)).toFixed(2) }}</span>
                 </div>
               </div>
             </div>
@@ -871,12 +963,16 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
               </div>
               <div class="flex items-center gap-2">
                 <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
-                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Curr</span>
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Horizon</span>
                   <span class="text-xs font-bold text-blue-400">{{ s.winRateA.toFixed(1) }}%</span>
                 </div>
                 <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
-                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Strat B</span>
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">PM</span>
                   <span class="text-xs font-bold text-blue-300">{{ s.winRateB.toFixed(1) }}%</span>
+                </div>
+                <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Trader</span>
+                  <span class="text-xs font-bold text-blue-200">{{ s.winRateC.toFixed(1) }}%</span>
                 </div>
               </div>
             </div>
@@ -894,15 +990,21 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
               </div>
               <div class="flex items-center gap-2">
                 <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
-                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Curr</span>
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Horizon</span>
                   <span class="text-xs font-bold" :class="s.totalAlphaA >= 0 ? 'text-green-400' : 'text-red-400'">
                     {{ s.totalAlphaA >= 0 ? '+' : '' }}{{ s.totalAlphaA.toFixed(1) }}%
                   </span>
                 </div>
                 <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
-                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Strat B</span>
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">PM</span>
                   <span class="text-xs font-bold" :class="s.totalAlphaB >= 0 ? 'text-green-300' : 'text-red-300'">
                     {{ s.totalAlphaB >= 0 ? '+' : '' }}{{ s.totalAlphaB.toFixed(1) }}%
+                  </span>
+                </div>
+                <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Trader</span>
+                  <span class="text-xs font-bold" :class="s.totalAlphaC >= 0 ? 'text-green-200' : 'text-red-200'">
+                    {{ s.totalAlphaC >= 0 ? '+' : '' }}{{ s.totalAlphaC.toFixed(1) }}%
                   </span>
                 </div>
               </div>
@@ -921,12 +1023,16 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
               </div>
               <div class="flex items-center gap-2">
                 <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
-                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Curr</span>
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Horizon</span>
                   <span class="text-xs font-bold text-[var(--color-accent-primary)]">{{ s.stratAROI.toFixed(1) }}%</span>
                 </div>
                 <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
-                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Strat B</span>
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">PM</span>
                   <span class="text-xs font-bold text-emerald-400">{{ s.stratBROI.toFixed(1) }}%</span>
+                </div>
+                <div class="flex flex-col items-end bg-white/[0.02] px-2 py-0.5 rounded border border-white/5 min-w-[50px]">
+                  <span class="text-[8px] text-[var(--color-text-muted)] uppercase font-medium">Trader</span>
+                  <span class="text-xs font-bold text-emerald-300">{{ s.stratCROI.toFixed(1) }}%</span>
                 </div>
               </div>
             </div>
@@ -961,7 +1067,7 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
             <Info :size="14" class="text-[var(--color-text-muted)] cursor-help" />
             <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-3 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg shadow-2xl text-[10px] opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
               <p class="font-bold text-[var(--color-accent-primary)] mb-1">Strategy Logic</p>
-              <p class="mb-2">Cumulative ROI based on {{ strategySource === 'RATING' ? 'Expert Ratings (Overweight/Buy)' : 'Final Portfolio Actions (Buy/Hold)' }}.</p>
+              <p class="mb-2">Cumulative ROI based on 5-Day Horizon, Portfolio Manager, and Trading Agent strategies.</p>
               <p class="font-bold text-[var(--color-accent-primary)] mb-1">Benchmark</p>
               <p>{{ benchmarkType === 'SPY' ? 'S&P 500 Index (SPY) for the same period.' : 'Pure Buy & Hold strategy for the underlying assets.' }}</p>
             </div>
@@ -984,11 +1090,15 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
           </button>
           <div v-if="showStrategyA" class="flex items-center gap-1.5 bg-white/5 px-2.5 py-1.5 rounded-lg border border-white/5 text-white">
             <div class="w-4 h-0.5 bg-[var(--color-accent-primary)]"></div>
-            <span>Current (Solid)</span>
+            <span>Horizon (Solid)</span>
           </div>
           <div v-if="showStrategyB" class="flex items-center gap-1.5 bg-white/5 px-2.5 py-1.5 rounded-lg border border-white/5 text-white">
             <div class="w-4 h-0.5 border-t-2 border-dotted border-[var(--color-accent-primary)]"></div>
-            <span>Strat B (Dotted)</span>
+            <span>PM (Dotted)</span>
+          </div>
+          <div v-if="showStrategyC" class="flex items-center gap-1.5 bg-white/5 px-2.5 py-1.5 rounded-lg border border-white/5 text-white">
+            <div class="w-4 h-0.5 border-t-2 border-dashed border-[var(--color-accent-primary)]"></div>
+            <span>Trader (Dashed)</span>
           </div>
           <!-- Benchmark Legend -->
           <div class="flex items-center gap-1.5 bg-white/5 px-2.5 py-1.5 rounded-lg border border-white/5 text-white">
@@ -1034,12 +1144,18 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
                       :deep-model="entry.deep_model"
                       :depth="entry.depth"
                     />
-                    <div class="flex items-center">
-                      <span class="text-[8px] font-bold px-1.5 py-0.5 rounded border font-mono mt-1"
+                    <div class="flex items-center gap-1.5 mt-1 flex-wrap">
+                      <span class="text-[8px] font-bold px-1.5 py-0.5 rounded border font-mono"
                             :class="getSignalLabel(entry.rating) === 'BUY' || getSignalLabel(entry.rating) === 'OVERWEIGHT' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/10'
                                   : getSignalLabel(entry.rating) === 'SELL' || getSignalLabel(entry.rating) === 'UNDERWEIGHT' ? 'bg-rose-500/10 text-rose-400 border-rose-500/10'
                                   : 'bg-amber-500/5 text-amber-500/80 border-amber-500/10'">
-                        {{ getSignalLabel(entry.rating) }}
+                        PM: {{ getSignalLabel(entry.rating) }}
+                      </span>
+                      <span class="text-[8px] font-bold px-1.5 py-0.5 rounded border font-mono"
+                            :class="getSignalLabel(entry.decision) === 'BUY' || getSignalLabel(entry.decision) === 'OVERWEIGHT' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/10'
+                                  : getSignalLabel(entry.decision) === 'SELL' || getSignalLabel(entry.decision) === 'UNDERWEIGHT' ? 'bg-rose-500/10 text-rose-400 border-rose-500/10'
+                                  : 'bg-amber-500/5 text-amber-500/80 border-amber-500/10'">
+                        Trader: {{ getSignalLabel(entry.decision) }}
                       </span>
                     </div>
                   </div>
@@ -1079,7 +1195,7 @@ const TIME_RANGES = ['1M', '3M', '6M', 'YTD', 'ALL'] as const
                 <td colspan="7" class="px-8 py-6">
                   <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div class="space-y-2">
-                      <h4 class="text-[10px] uppercase font-black text-[var(--color-text-muted)] tracking-widest">Portfolio Action Detail</h4>
+                      <h4 class="text-[10px] uppercase font-black text-[var(--color-text-muted)] tracking-widest">Trader Proposal Detail</h4>
                       <p class="text-sm leading-relaxed text-[var(--color-text-secondary)]">{{ entry.decision }}</p>
                     </div>
                     <div class="space-y-2">

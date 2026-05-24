@@ -168,6 +168,11 @@ export async function pauseResearchQueue(): Promise<void> {
   await api.post('/analysis/queue/pause')
 }
 
+export async function pauseResearchQueueSoft(): Promise<void> {
+  await api.post('/analysis/queue/pause-soft')
+}
+
+
 export async function resumeResearchQueue(): Promise<void> {
   await api.post('/analysis/queue/resume')
 }

@@ -265,7 +265,7 @@ def execute_analysis_task(request: AnalysisRequest, config: dict, db_path: str):
         if request.id:
             status = "completed" if not task_state.last_error else "failed"
             if was_yielded:
-                status = "pending"
+                status = "paused" if task_state.is_paused else "pending"
             
             registry.update_queue_status(request.id, status, error=task_state.last_error)
             
@@ -405,6 +405,15 @@ def pause_research_queue():
     if task_state.is_running():
         task_state.stop_job()
     return {"status": "success"}
+
+@router.post("/queue/pause-soft")
+def pause_research_queue_soft():
+    task_state.is_paused = True
+    if task_state.is_running():
+        task_state.stop_job(yield_after=True)
+    return {"status": "success"}
+
+
 
 @router.post("/queue/resume")
 def resume_research_queue(background_tasks: BackgroundTasks, registry: RunRegistry = Depends(get_registry), config: dict = Depends(get_config)):

@@ -17,6 +17,7 @@ import {
   reorderResearchQueue,
   startResearchQueue,
   pauseResearchQueue,
+  pauseResearchQueueSoft,
   resumeResearchQueue,
   fetchSchedules,
   toggleSchedule,
@@ -109,6 +110,15 @@ const pipelineSteps = [
   'Debating',
   'Finalizing Decision'
 ]
+
+const stepDisplayNames: Record<string, string> = {
+  'Market Analyst': 'Expert Rating (Market)',
+  'Social Analyst': 'Expert Rating (Social)',
+  'News Analyst': 'Expert Rating (News)',
+  'Fundamentals Analyst': 'Expert Rating (Fundamental)',
+  'Debating': 'Debating',
+  'Finalizing Decision': 'Portfolio Manager'
+}
 
 // Token Tracking State
 const lastInputTokens = ref(0)
@@ -579,6 +589,21 @@ async function handlePauseToggle() {
   }
 }
 
+async function handleRunningCardClick() {
+  try {
+    if (isQueuePaused.value) {
+      await resumeResearchQueue()
+      successMessage.value = 'Research Stack resumed.'
+    } else {
+      await pauseResearchQueueSoft()
+      successMessage.value = 'Research Stack will pause after current job.'
+    }
+  } catch (e: any) {
+    error.value = `Failed to toggle queue pause: ${e.message}`
+  }
+}
+
+
 async function sweepDepth() {
   if (!tickersInput.value.trim()) {
     error.value = 'Please enter a ticker first'
@@ -839,7 +864,7 @@ function formatDate(dateStr: string | null): string {
                 class="text-[10px] font-black uppercase tracking-widest text-center transition-colors duration-500"
                 :class="runningJob?.sub_status?.includes(step) ? 'text-yellow-400' : 'text-white/40'"
               >
-                {{ step }}
+                {{ stepDisplayNames[step] || step }}
               </span>
             </div>
           </div>
@@ -1213,16 +1238,29 @@ function formatDate(dateStr: string | null): string {
                 <span class="px-2.5 py-1 bg-blue-500/30 text-blue-200 text-[9px] font-black rounded-lg border border-blue-500/30 tracking-widest">
                   DEPTH {{ job.depth }}
                 </span>
+                <button
+                  v-if="job.id === runningJob?.id"
+                  @click="handleRunningCardClick"
+                  class="px-2.5 py-1 text-[9px] font-black rounded-lg uppercase tracking-wider border flex items-center gap-1 cursor-pointer transition-all hover:scale-105 active:scale-95"
+                  :class="[
+                    isQueuePaused ? 'bg-amber-500/20 text-amber-300 border-amber-500/30 animate-pulse hover:bg-amber-500/30' : 'bg-green-500/20 text-green-300 border-green-500/30 animate-pulse hover:bg-green-500/30'
+                  ]"
+                  :title="isQueuePaused ? 'Resume Stack' : 'Pause Stack gracefully after this job'"
+                >
+                  <Pause v-if="!isQueuePaused" :size="10" />
+                  <Play v-else :size="10" />
+                  {{ isQueuePaused ? 'PAUSING...' : 'RUNNING' }}
+                </button>
                 <span 
+                  v-else
                   class="px-2.5 py-1 text-[9px] font-black rounded-lg uppercase tracking-wider border"
                   :class="[
-                    job.id === runningJob?.id ? 'bg-green-500/20 text-green-300 border-green-500/30 animate-pulse' :
                     job.status === 'paused' ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' :
                     job.status === 'failed' ? 'bg-red-500/20 text-red-300 border-red-500/30' :
                     'bg-blue-500/20 text-blue-300 border-blue-500/30'
                   ]"
                 >
-                  {{ job.id === runningJob?.id ? 'RUNNING' : job.status }}
+                  {{ job.status }}
                 </span>
               </div>
             </div>

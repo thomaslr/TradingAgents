@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchRuns, deleteRuns, deleteRun, type Run } from '../api/client'
-import { TrendingUp, TrendingDown, Minus, Clock, CheckCircle, XCircle, Eye, Trash2, RefreshCw, Search, ArrowDown, ArrowUp } from 'lucide-vue-next'
+import { TrendingUp, TrendingDown, Minus, Clock, CheckCircle, XCircle, Eye, Trash2, RefreshCw, Search, ArrowDown, ArrowUp, Filter } from 'lucide-vue-next'
 import ConfigFilterPanel from '../components/ConfigFilterPanel.vue'
 import ConfigDisplay from '../components/ConfigDisplay.vue'
 import { activeTicker, setActiveTicker, activeDate, loadConfigs, enabledConfigs, configs } from '../store'
@@ -19,10 +19,10 @@ const endDate = ref(localStorage.getItem('dash_end') || '')
 const sortColumn = ref<keyof Run | 'completed_at'>((localStorage.getItem('dash_sort_col') as any) || 'completed_at')
 const sortDirection = ref<'asc' | 'desc'>((localStorage.getItem('dash_sort_dir') as any) || 'desc')
 const selectedRuns = ref<Set<number>>(new Set())
-
-
+const filterMode = ref<'ACTIVE' | 'ALL'>((localStorage.getItem('dash_filter_mode') as any) || 'ALL')
 
 watch(searchQuery, (v) => localStorage.setItem('dash_search', v))
+watch(filterMode, (v) => localStorage.setItem('dash_filter_mode', v))
 watch(startDate, (v) => localStorage.setItem('dash_start', v))
 watch(endDate, (v) => localStorage.setItem('dash_end', v))
 watch(sortColumn, (v) => localStorage.setItem('dash_sort_col', v))
@@ -86,7 +86,7 @@ const processedRuns = computed(() => {
   let result = runs.value
 
   // Ticker filter (Top sticky control bar)
-  if (activeTicker.value) {
+  if (filterMode.value === 'ACTIVE' && activeTicker.value) {
     result = result.filter(r => r.ticker === activeTicker.value)
   }
 
@@ -315,6 +315,15 @@ function formatDate(dateStr: string | null): string {
             class="w-full pl-9 pr-4 py-2 bg-[var(--color-bg-card)] border border-[var(--color-border-default)] rounded-lg text-sm focus:outline-none focus:border-[var(--color-accent-primary)] transition-colors text-[var(--color-text-primary)]"
           />
         </div>
+        <!-- Ticker Focus -->
+        <div class="flex items-center gap-2 bg-[var(--color-bg-card)] px-3 py-1.5 rounded-xl border border-[var(--color-border-default)]">
+          <Filter :size="14" class="text-[var(--color-text-muted)]" />
+          <span class="text-xs font-bold text-[var(--color-text-muted)]">Focus:</span>
+          <select v-model="filterMode" class="bg-transparent border-none text-xs font-bold focus:ring-0 cursor-pointer p-0 text-[var(--color-text-primary)] focus:outline-none">
+            <option value="ALL" class="bg-[var(--color-bg-card)]">All Tickers</option>
+            <option value="ACTIVE" class="bg-[var(--color-bg-card)]">Active Ticker ({{ activeTicker }})</option>
+          </select>
+        </div>
         <!-- Unified Date Range -->
         <div class="flex items-center gap-4 bg-[var(--color-bg-card)] p-1.5 rounded-xl border border-[var(--color-border-default)]">
           <div class="flex items-center p-1 bg-black/20 rounded-lg">
@@ -425,10 +434,10 @@ function formatDate(dateStr: string | null): string {
               </th>
               <th class="px-5 py-3 text-left">Configuration (Depth)</th>
               <th class="px-5 py-3 text-left cursor-pointer hover:text-[var(--color-text-primary)]" @click="handleSort('rating')">
-                <div class="flex items-center gap-1">Rating (AI) <ArrowUp v-if="sortColumn === 'rating' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'rating' && sortDirection === 'desc'" :size="12"/></div>
+                <div class="flex items-center gap-1">Portfolio Manager <ArrowUp v-if="sortColumn === 'rating' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'rating' && sortDirection === 'desc'" :size="12"/></div>
               </th>
               <th class="px-5 py-3 text-left cursor-pointer hover:text-[var(--color-text-primary)]" @click="handleSort('action')">
-                <div class="flex items-center gap-1">Action (PM) <ArrowUp v-if="sortColumn === 'action' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'action' && sortDirection === 'desc'" :size="12"/></div>
+                <div class="flex items-center gap-1">Trader <ArrowUp v-if="sortColumn === 'action' && sortDirection === 'asc'" :size="12"/><ArrowDown v-if="sortColumn === 'action' && sortDirection === 'desc'" :size="12"/></div>
               </th>
 
               <th class="px-5 py-3 text-right cursor-pointer hover:text-[var(--color-text-primary)]" @click="handleSort('close_price')">
