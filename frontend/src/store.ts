@@ -20,6 +20,11 @@ export const activeTicker = ref<string>(
   localStorage.getItem('chart_ticker') || (selectedTickers.value[0] || 'SPY')
 )
 
+// 2.05 Select all tickers
+export const allTickersSelected = ref<boolean>(
+  localStorage.getItem('all_tickers_selected') === 'true'
+)
+
 // Watch selectedTickers and update localStorage
 watch(
   selectedTickers,
@@ -37,6 +42,13 @@ watch(
       localStorage.setItem('chart_ticker', ticker)
       localStorage.setItem('perf_ticker', ticker)
     }
+  }
+)
+
+watch(
+  allTickersSelected,
+  (selected) => {
+    localStorage.setItem('all_tickers_selected', String(selected))
   }
 )
 
@@ -151,6 +163,8 @@ if (typeof window !== 'undefined') {
       selectedTickers.value = parseTickers(event.newValue)
     } else if (event.key === 'chart_ticker' && event.newValue !== null) {
       activeTicker.value = event.newValue
+    } else if (event.key === 'all_tickers_selected' && event.newValue !== null) {
+      allTickersSelected.value = event.newValue === 'true'
     } else if (event.key === 'shared_active_date' && event.newValue !== null) {
       activeDate.value = event.newValue
     } else if (event.key === 'trading_provider' && event.newValue !== null) {

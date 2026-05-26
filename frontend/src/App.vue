@@ -5,6 +5,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { 
   selectedTickers, 
   activeTicker, 
+  allTickersSelected,
   activeDate, 
   provider, 
   quickModel, 
@@ -50,7 +51,18 @@ function submitNewTicker() {
   }
 }
 
+const isAllTickersDisabled = computed(() => {
+  return currentRoute.value === 'chart' || currentRoute.value === 'report'
+})
+
+function changeToAllTickers() {
+  if (!isAllTickersDisabled.value) {
+    allTickersSelected.value = true
+  }
+}
+
 function changeActiveTicker(ticker: string) {
+  allTickersSelected.value = false
   setActiveTicker(ticker)
 }
 
@@ -176,11 +188,25 @@ function truncateModel(name: string) {
           <span class="text-xs font-black uppercase text-[var(--color-text-muted)] tracking-wider">Tickers:</span>
           <div class="flex flex-wrap gap-1.5 items-center">
             <button
+              @click="changeToAllTickers"
+              :disabled="isAllTickersDisabled"
+              class="px-2.5 py-1 rounded text-xs font-bold transition-all border select-none animate-none"
+              :class="[
+                allTickersSelected && !isAllTickersDisabled
+                  ? 'bg-[var(--color-accent-primary)] text-white border-[var(--color-accent-primary)] shadow-sm shadow-[var(--color-accent-primary)]/20'
+                  : 'bg-[var(--color-bg-card)] text-[var(--color-text-secondary)] border-[var(--color-border-default)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]',
+                isAllTickersDisabled ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
+              ]"
+              title="View all tickers aggregated"
+            >
+              All
+            </button>
+            <button
               v-for="ticker in selectedTickers"
               :key="ticker"
               @click="changeActiveTicker(ticker)"
               class="px-2.5 py-1 rounded text-xs font-bold transition-all border cursor-pointer select-none"
-              :class="activeTicker === ticker
+              :class="activeTicker === ticker && (!allTickersSelected || isAllTickersDisabled)
                 ? 'bg-[var(--color-accent-primary)] text-white border-[var(--color-accent-primary)] shadow-sm shadow-[var(--color-accent-primary)]/20'
                 : 'bg-[var(--color-bg-card)] text-[var(--color-text-secondary)] border-[var(--color-border-default)] hover:text-[var(--color-text-primary)] hover:border-[var(--color-text-muted)]'"
             >

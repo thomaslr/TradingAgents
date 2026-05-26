@@ -2,7 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { fetchMetrics, fetchCacheStats, clearAnalystCache, type AnalysisMetrics, type CacheStats, type SimulationConfig } from '../api/client'
 import { Beaker, Zap, Cpu, BarChart3, RefreshCw, Layers, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-vue-next'
-import { configs, enabledConfigs, loadConfigs, selectedTickers } from '../store'
+import { configs, enabledConfigs, loadConfigs, selectedTickers, activeTicker, allTickersSelected } from '../store'
 import ConfigFilterPanel from '../components/ConfigFilterPanel.vue'
 import ConfigDisplay from '../components/ConfigDisplay.vue'
 
@@ -214,26 +214,30 @@ async function purgeCache() {
 
 // Stats
 const hasMetrics = computed(() => {
-  return metrics.value.some(m => m.metrics_id !== null && m.metrics_id !== undefined)
+  return filteredMetrics.value.some(m => m.metrics_id !== null && m.metrics_id !== undefined)
 })
 
 const avgTps = computed(() => {
-  const valid = metrics.value.filter(m => m.metrics_id !== null && m.metrics_id !== undefined && m.avg_tps > 0)
+  const valid = filteredMetrics.value.filter(m => m.metrics_id !== null && m.metrics_id !== undefined && m.avg_tps > 0)
   if (valid.length === 0) return 0
   const total = valid.reduce((acc, m) => acc + m.avg_tps, 0)
   return total / valid.length
 })
 
 const totalTokens = computed(() => {
-  const valid = metrics.value.filter(m => m.metrics_id !== null && m.metrics_id !== undefined)
+  const valid = filteredMetrics.value.filter(m => m.metrics_id !== null && m.metrics_id !== undefined)
   return valid.reduce((acc, m) => acc + m.input_tokens + m.output_tokens, 0)
 })
 
 const filteredMetrics = computed(() => {
-  // Filter by selected tickers
+  // Filter by selected/active tickers
   let result = metrics.value
-  if (selectedTickers.value && selectedTickers.value.length > 0) {
-    result = result.filter(m => selectedTickers.value.includes(m.ticker))
+  if (!allTickersSelected.value && activeTicker.value) {
+    result = result.filter(m => m.ticker === activeTicker.value)
+  } else if (allTickersSelected.value) {
+    if (selectedTickers.value && selectedTickers.value.length > 0) {
+      result = result.filter(m => selectedTickers.value.includes(m.ticker))
+    }
   }
 
   // Filter by enabled simulation configs
@@ -357,7 +361,7 @@ function formatRunDate(dateStr: string | null): string {
         <BarChart3 class="absolute -right-4 -bottom-4 opacity-5 group-hover:scale-125 transition-transform duration-500" :size="120" />
         <p class="text-xs font-black text-[var(--color-text-muted)] uppercase tracking-widest mb-2">Historical Benchmarks</p>
         <h3 class="text-5xl font-black tracking-tighter flex items-end gap-2">
-          {{ metrics.length }}
+          {{ filteredMetrics.length }}
           <span class="text-xl text-[var(--color-text-muted)] mb-2 uppercase font-black tracking-widest">runs</span>
         </h3>
       </div>
