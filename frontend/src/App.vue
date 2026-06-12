@@ -20,6 +20,9 @@ import {
 const route = useRoute()
 const currentRoute = computed(() => route.name)
 
+// @ts-ignore
+const buildTime = typeof __BUILD_TIMESTAMP__ !== 'undefined' ? new Date(__BUILD_TIMESTAMP__).toLocaleString() : 'Dev Build'
+
 const navItems = computed(() => [
   { name: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, to: '/' },
   { name: 'analysis', label: 'Analysis', icon: CalendarClock, to: '/analysis' },
@@ -175,6 +178,9 @@ function truncateModel(name: string) {
         <div class="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
           <span class="w-2 h-2 rounded-full bg-[var(--color-signal-buy)] animate-pulse"></span>
           System Online
+        </div>
+        <div class="mt-3 text-[9px] text-[var(--color-text-muted)] opacity-50 uppercase tracking-widest font-mono" title="Frontend Build Time">
+          Build: {{ buildTime }}
         </div>
       </div>
     </aside>

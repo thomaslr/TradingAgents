@@ -367,13 +367,22 @@ async function loadDefaultConfig() {
   }
 }
 
-async function loadOllamaModels() {
+async function loadOllamaModels(retries = 0) {
   fetchingModels.value = true
   try {
     const models = await fetchOllamaModels()
+    if (models.length === 0 && retries < 2) {
+      // Server might still be waking up. Wait 5s and try again.
+      setTimeout(() => loadOllamaModels(retries + 1), 5000)
+      return
+    }
     ollamaModels.value = models
   } catch (e: any) {
     console.error('Failed to fetch Ollama models:', e)
+    if (retries < 2) {
+      setTimeout(() => loadOllamaModels(retries + 1), 5000)
+      return
+    }
   } finally {
     fetchingModels.value = false
   }
@@ -994,8 +1003,11 @@ function formatDate(dateStr: string | null): string {
                     <option v-for="m in ollamaModels" :key="m" :value="m">{{ m }}</option>
                     <option v-if="ollamaModels.length === 0" disabled>No models found</option>
                   </select>
-                  <div v-if="fetchingModels" class="absolute right-3 top-3">
-                    <RefreshCw :size="18" class="animate-spin text-[var(--color-text-muted)]" />
+                  <div class="absolute right-3 top-3">
+                    <button v-if="!fetchingModels" @click.prevent="loadOllamaModels(0)" class="text-[var(--color-text-muted)] hover:text-[var(--color-accent-primary)] transition-colors" title="Refresh Models">
+                      <RefreshCw :size="18" />
+                    </button>
+                    <RefreshCw v-else :size="18" class="animate-spin text-[var(--color-text-muted)]" />
                   </div>
                 </div>
                 <input v-else v-model="quickModel" :disabled="isProcessingQueue" type="text" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />
@@ -1008,8 +1020,11 @@ function formatDate(dateStr: string | null): string {
                     <option v-for="m in ollamaModels" :key="m" :value="m">{{ m }}</option>
                     <option v-if="ollamaModels.length === 0" disabled>No models found</option>
                   </select>
-                  <div v-if="fetchingModels" class="absolute right-3 top-3">
-                    <RefreshCw :size="18" class="animate-spin text-[var(--color-text-muted)]" />
+                  <div class="absolute right-3 top-3">
+                    <button v-if="!fetchingModels" @click.prevent="loadOllamaModels(0)" class="text-[var(--color-text-muted)] hover:text-[var(--color-accent-primary)] transition-colors" title="Refresh Models">
+                      <RefreshCw :size="18" />
+                    </button>
+                    <RefreshCw v-else :size="18" class="animate-spin text-[var(--color-text-muted)]" />
                   </div>
                 </div>
                 <input v-else v-model="deepModel" :disabled="isProcessingQueue" type="text" class="w-full px-4 py-3 bg-[var(--color-bg-elevated)] border border-[var(--color-border-default)] rounded-xl focus:outline-none focus:border-[var(--color-accent-primary)]" />

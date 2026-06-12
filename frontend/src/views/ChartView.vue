@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { createChart, type IChartApi, type ISeriesApi, ColorType, CandlestickSeries, HistogramSeries, createSeriesMarkers, LineSeries, LineStyle } from 'lightweight-charts'
+import { createChart, type IChartApi, type ISeriesApi, ColorType, CandlestickSeries, HistogramSeries, createSeriesMarkers, LineSeries, LineStyle, PriceScaleMode } from 'lightweight-charts'
 import { fetchOHLC, fetchRuns, fetchTickers, fetchPerformanceData, type Run, type VolumeItem, type SimulationConfig, type PerformanceEntry, type MemoryEntry } from '../api/client'
 import { ArrowLeft, RefreshCw, Clock } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
@@ -211,7 +211,7 @@ function getTargetWeight(rating: string, prevWeight: number): number {
   return prevWeight
 }
 
-function computeConfigReturns(configEntries: MemoryEntry[]) {
+function computeConfigReturns(configEntries: MemoryEntry[], ohlcCandles: any[] = []) {
   const weekdayEntries = configEntries.filter(e => !isWeekend(e.date))
   if (weekdayEntries.length === 0) {
     return { stratAPoints: [], stratBPoints: [], stratCPoints: [], benchPoints: [] }
@@ -236,10 +236,16 @@ function computeConfigReturns(configEntries: MemoryEntry[]) {
     return { stratAPoints: [], stratBPoints: [], stratCPoints: [], benchPoints: [] }
   }
 
-  const startDate = runDates[0]
+  const firstRunDate = runDates[0]
+  const chartStartDate = ohlcCandles.length > 0 ? ohlcCandles[0].time : firstRunDate
+  const startDate = chartStartDate < firstRunDate ? chartStartDate : firstRunDate
+
   const lastRunDate = runDates[runDates.length - 1]
   const endDate = getEndDateWithBuffer(lastRunDate, 5)
-  const datasetDates = getWeekdaysBetween(startDate, endDate)
+  const chartEndDate = ohlcCandles.length > 0 ? ohlcCandles[ohlcCandles.length - 1].time : endDate
+  const endLimit = chartEndDate > endDate ? chartEndDate : endDate
+
+  const datasetDates = getWeekdaysBetween(startDate, endLimit)
 
   let stratAValue = 100
   let stratBValue = 100
@@ -423,6 +429,11 @@ async function loadChart() {
       rightPriceScale: {
         borderColor: '#1e293b',
       },
+      leftPriceScale: {
+        visible: true,
+        borderColor: '#1e293b',
+        mode: PriceScaleMode.Percentage,
+      },
       timeScale: {
         borderColor: '#1e293b',
         timeVisible: true,
@@ -442,6 +453,15 @@ async function loadChart() {
       wickUpColor: '#22c55e',
     })
     candleSeries.setData(ohlc.candles as any)
+
+    // Percentage helper series on the left scale
+    const percentSeries = chart.addSeries(LineSeries, {
+      priceScaleId: 'left',
+      color: 'transparent',
+      lastValueVisible: false,
+      priceLineVisible: false,
+    })
+    percentSeries.setData(ohlc.candles.map(c => ({ time: c.time, value: c.close })) as any)
 
     // Volume series
     volumeSeries = chart.addSeries(HistogramSeries, {
@@ -523,6 +543,11 @@ async function loadChart() {
       // Map to quickly find stock price on a date
       const priceMap = new Map(ohlc.candles.map(c => [c.time, c.close]))
 
+      const activeStrategySeriesList: {
+        series: any;
+        rawPoints: { time: string; value: number }[];
+      }[] = []
+
       // For each enabled configuration
       configs.value.forEach(config => {
         if (!enabledConfigs.value.has(config.config_id)) return
@@ -548,70 +573,78 @@ async function loadChart() {
           config_id: e.config_id
         })).sort((a, b) => a.date.localeCompare(b.date))
 
-        const { stratAPoints, stratBPoints, stratCPoints } = computeConfigReturns(adaptedEntries)
-
-        // Find the price at the start date to normalize curves
-        const firstPoint = stratAPoints[0] || stratBPoints[0] || stratCPoints[0]
-        if (!firstPoint) return
-
-        const startPrice = priceMap.get(firstPoint.time) || ohlc.candles[0]?.close || 100
+        const { stratAPoints, stratBPoints, stratCPoints } = computeConfigReturns(adaptedEntries, ohlc.candles)
 
         // Draw Strategy A (Horizon)
         if (showStrategyA.value && stratAPoints.length > 0) {
-          const normalizedData = stratAPoints
-            .filter(p => priceMap.has(p.time)) // align with stock timeline
-            .map(p => ({
-              time: p.time,
-              value: p.value * (startPrice / 100)
-            }))
-          
-          if (normalizedData.length > 0) {
-            const series = chart!.addSeries(LineSeries, {
-              color: safeConfigColor(config),
-              lineWidth: 3,
-            })
-            series.setData(normalizedData as any)
-          }
+          const series = chart!.addSeries(LineSeries, {
+            color: safeConfigColor(config),
+            lineWidth: 3,
+          })
+          activeStrategySeriesList.push({
+            series,
+            rawPoints: stratAPoints
+          })
         }
 
         // Draw Strategy B (Portfolio Manager)
         if (showStrategyB.value && stratBPoints.length > 0) {
-          const normalizedData = stratBPoints
-            .filter(p => priceMap.has(p.time)) // align with stock timeline
-            .map(p => ({
-              time: p.time,
-              value: p.value * (startPrice / 100)
-            }))
-          
-          if (normalizedData.length > 0) {
-            const series = chart!.addSeries(LineSeries, {
-              color: safeConfigColor(config),
-              lineWidth: 3,
-              lineStyle: LineStyle.Dotted,
-            })
-            series.setData(normalizedData as any)
-          }
+          const series = chart!.addSeries(LineSeries, {
+            color: safeConfigColor(config),
+            lineWidth: 3,
+            lineStyle: LineStyle.Dotted,
+          })
+          activeStrategySeriesList.push({
+            series,
+            rawPoints: stratBPoints
+          })
         }
 
         // Draw Strategy C (Trading Agent)
         if (showStrategyC.value && stratCPoints.length > 0) {
-          const normalizedData = stratCPoints
-            .filter(p => priceMap.has(p.time)) // align with stock timeline
-            .map(p => ({
-              time: p.time,
-              value: p.value * (startPrice / 100)
-            }))
-          
-          if (normalizedData.length > 0) {
-            const series = chart!.addSeries(LineSeries, {
-              color: safeConfigColor(config),
-              lineWidth: 3,
-              lineStyle: LineStyle.Dashed,
-            })
-            series.setData(normalizedData as any)
-          }
+          const series = chart!.addSeries(LineSeries, {
+            color: safeConfigColor(config),
+            lineWidth: 3,
+            lineStyle: LineStyle.Dashed,
+          })
+          activeStrategySeriesList.push({
+            series,
+            rawPoints: stratCPoints
+          })
         }
       })
+
+      // Function to dynamically update normalization as visible range shifts (zoom/scroll)
+      function updateNormalization() {
+        if (!chart || activeStrategySeriesList.length === 0) return
+        const range = chart.timeScale().getVisibleRange()
+        if (!range) return
+
+        const firstVisibleCandle = ohlc.candles.find(c => c.time >= range.from) || ohlc.candles[0]
+        if (!firstVisibleCandle) return
+
+        const chartStartTime = firstVisibleCandle.time
+        const startPrice = firstVisibleCandle.close
+
+        activeStrategySeriesList.forEach(({ series, rawPoints }) => {
+          const startPoint = rawPoints.find(p => p.time === chartStartTime) || rawPoints.find(p => p.time >= chartStartTime) || rawPoints[0]
+          const startStratValue = startPoint ? startPoint.value : 100
+
+          const normalizedData = rawPoints
+            .filter(p => priceMap.has(p.time) && p.time >= chartStartTime)
+            .map(p => ({
+              time: p.time,
+              value: p.value * (startPrice / startStratValue)
+            }))
+          series.setData(normalizedData as any)
+        })
+      }
+
+      // Perform initial alignment
+      updateNormalization()
+
+      // Subscribe to visible range changes (covers mouse wheel zoom and dragging)
+      chart.timeScale().subscribeVisibleTimeRangeChange(updateNormalization)
     }
 
     chart.timeScale().fitContent()
