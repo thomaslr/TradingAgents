@@ -11,12 +11,19 @@
         "statusBar.background": "#ce4b18",
         "statusBar.foreground": "#e7e7e7",
         "statusBarItem.hoverBackground": "#e76532",
-        "statusBarItem.remoteBackground": "#ce4b18",
+        "statusBarItem.remoteBackground": "#17c849",
         "statusBarItem.remoteForeground": "#e7e7e7",
         "titleBar.activeBackground": "#ce4b18",
         "titleBar.activeForeground": "#e7e7e7",
         "titleBar.inactiveBackground": "#ce4b1899",
-        "titleBar.inactiveForeground": "#e7e7e799"
+        "titleBar.inactiveForeground": "#e7e7e799",
+        "activityBarTop.activeBackground": "#e76532",
+        "activityBarTop.background": "#e76532",
+        "activityBarTop.foreground": "#15202b",
+        "activityBarTop.inactiveForeground": "#15202b99",
+        "commandCenter.foreground": "#e7e7e7",
+        "statusBar.debuggingBackground": "#ce4b18",
+        "statusBar.debuggingForeground": "#e7e7e7"
     },
     "peacock.color": "#ce4b18",
     "python.defaultInterpreterPath": ".\\.venv\\Scripts\\python.exe"
